@@ -199,8 +199,8 @@ def handle_universal_query(raw_query: str):
                         pts.append((px, py, f"({px:.3g}, {py:.3g})"))
                 x_center = pts[0][0] if pts else 0.0
                 render_plot(y_exprs, labels, x_center - 10, x_center + 10, pts, "System Intersection")
-        return
-
+        
+                     return 
     # 3. Strip conversational prefixes
     cleaned = re.sub(
         r"^(what is|calculate|compute|solve|evaluate|find|simplify)\s+",
@@ -237,6 +237,19 @@ def handle_universal_query(raw_query: str):
         st.subheader("Derivative Results")
         st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
         st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))
+        return
+
+    # 6. General Evaluation / Fallback
+    try:
+        arith_query = re.sub(r'(?<=[0-9\)])\s*[xX×]\s*(?=[0-9\(])', '*', cleaned)
+        expr = clean_and_parse(arith_query)
+        simplified = sp.simplify(expr)
+        st.subheader("Result")
+        st.latex(sp.latex(expr) + " = " + sp.latex(simplified))
+        if not simplified.free_symbols:
+            st.write(f"**Decimal:** `{float(simplified.evalf()):g}`")
+    except Exception:
+        st.warning("Could not parse that expression. Try `(5 + 6) * 5` or `derivative of x^3`.")
 
 st.title ("OmniMath Calculator")
 user_input = st.text_input("Enter a math expression or query (e.g., the derivative of x^3:")
