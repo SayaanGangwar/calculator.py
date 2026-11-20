@@ -1,4 +1,5 @@
 import re
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
@@ -10,101 +11,69 @@ from sympy.parsing.sympy_parser import (
     convert_xor,
 )
 
-# ---------------------------------------------------------------------------
-# Page Setup & Styling
-# ---------------------------------------------------------------------------
+# ==============================================================================
+# PAGE CONFIG & SYMBOLIC SETUP
+# ==============================================================================
 st.set_page_config(
-    page_title="Python Algebra & Graphing Calculator",
+    page_title="OmniMath — Universal Algebra & Graphing Calculator",
     page_icon="🧮",
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    .stButton > button {
-        width: 100%;
-        border-radius: 8px;
-        font-weight: 600;
-        height: 2.8em;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---------------------------------------------------------------------------
-# SymPy Setup
-# ---------------------------------------------------------------------------
 TRANSFORMATIONS = standard_transformations + (
     implicit_multiplication_application,
     convert_xor,
 )
 
-x, y, z = sp.symbols("x y z")
+x, y, z, t, n = sp.symbols("x y z t n")
+
 LOCAL_DICT = {
-    "x": x,
-    "y": y,
-    "z": z,
-    "sqrt": sp.sqrt,
-    "sin": sp.sin,
-    "cos": sp.cos,
-    "tan": sp.tan,
-    "log": sp.log,
-    "ln": sp.log,
-    "pi": sp.pi,
-    "e": sp.E,
+    "x": x, "y": y, "z": z, "t": t, "n": n,
+    "sqrt": sp.sqrt, "cbrt": sp.cbrt, "abs": sp.Abs,
+    "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+    "asin": sp.asin, "acos": sp.acos, "atan": sp.atan,
+    "sinh": sp.sinh, "cosh": sp.cosh, "tanh": sp.tanh,
+    "log": sp.log, "ln": sp.log, "exp": sp.exp,
+    "pi": sp.pi, "e": sp.E, "i": sp.I, "I": sp.I,
+    "oo": sp.oo, "inf": sp.oo,
+    "factorial": sp.factorial, "gcd": sp.gcd, "lcm": sp.lcm,
+    "binomial": sp.binomial,
 }
 
 
 def clean_and_parse(expr_str: str):
-    """Parses string into a SymPy expression, preserving exact fractions."""
+    """Parses user string into an exact SymPy expression."""
     expr_str = expr_str.strip()
-    expr_str = expr_str.replace("×", "*").replace("÷", "/").replace("−", "-")
-    expr_str = re.sub(r"√\(([^)]+)\)", r"sqrt(\1)", expr_str)
-    expr_str = re.sub(r"√(\d+|[a-zA-Z])", r"sqrt(\1)", expr_str)
+    # Convert standalone integer fractions like 1/3 -> Rational(1, 3)
     expr_str = re.sub(
-        r"(?<![.\w])(\d+)\s*/\s*(\d+)(?![.\w])", r"Rational(\1, \2)", expr_str
+        r"(?<![.\w])(\d+)\s*/\s*(\d+)(?![.\w])",
+        r"Rational(\1, \2)",
+        expr_str,
     )
     return parse_expr(expr_str, local_dict=LOCAL_DICT, transformations=TRANSFORMATIONS)
 
 
-def strip_question_prefix(text: str) -> str:
-    """Removes conversational prefixes like 'what is' or 'solve'."""
-    t = text.strip()
-    if t.endswith("?"):
-        t = t[:-1].strip()
-    patterns = [
-        r"^(what is|what's|whats|calculate|compute|evaluate|find|simplify|answer)\s+",
-        r"^(solve for [xyz]|solve)\s+",
-        r"^(the value of)\s+",
-    ]
-    for pat in patterns:
-        t = re.sub(pat, "", t, flags=re.IGNORECASE).strip()
-    return t
-
-
-def create_function_plot(exprs, labels, x_min=-10.0, x_max=10.0, points=None, title="Graph"):
-    """Generates a Matplotlib figure for one or more expressions in x."""
-    fig, ax = plt.subplots(figsize=(7, 4.8))
+def render_plot(expressions, labels, x_min=-10.0, x_max=10.0, points=None, title="Function Graph"):
+    """Renders a clean Matplotlib chart in Streamlit."""
+    fig, ax = plt.subplots(figsize=(8, 4.5))
     x_vals = np.linspace(x_min, x_max, 600)
-    colors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea"]
 
-    for idx, (expr, label) in enumerate(zip(exprs, labels)):
-        color = colors[idx % len(colors)]
-        f_num = sp.lambdify(x, expr, modules=["numpy"])
-        with np.errstate(all="ignore"):
+    colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e"]
+    for idx, (expr, label) in enumerate(zip(expressions, labels)):
+        try:
+            f_num = sp.lambdify(x, expr, modules=["numpy"])
             y_vals = f_num(x_vals)
-        if np.ndim(y_vals) == 0:
-            y_vals = np.full_like(x_vals, float(y_vals))
-        y_vals = np.array(y_vals, dtype=complex)
-        y_real = np.where(np.abs(y_vals.imag) < 1e-7, y_vals.real, np.nan)
-        y_real = np.where(np.abs(y_real) > 1e5, np.nan, y_real)
-        ax.plot(x_vals, y_real, label=label, color=color, linewidth=2.2)
+            if np.ndim(y_vals) == 0:
+                y_vals = np.full_like(x_vals, float(y_vals))
+            y_vals = np.array(y_vals, dtype=float)
+            y_vals[np.abs(y_vals) > 1e5] = np.nan
+            ax.plot(x_vals, y_vals, label=label, color=colors[idx % len(colors)], linewidth=2.2)
+        except Exception:
+            pass
 
     if points:
         for px, py, plabel in points:
-            ax.scatter([px], [py], color="#f59e0b", edgecolor="black", zorder=5, s=75)
+            ax.scatter([px], [py], color="black", zorder=5, s=60)
             ax.annotate(
                 plabel,
                 (px, py),
@@ -114,52 +83,109 @@ def create_function_plot(exprs, labels, x_min=-10.0, x_max=10.0, points=None, ti
                 fontweight="bold",
             )
 
-    ax.axhline(0, color="#334155", linewidth=1)
-    ax.axvline(0, color="#334155", linewidth=1)
-    ax.grid(True, linestyle="--", alpha=0.45)
-    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.axhline(0, color="black", linewidth=1)
+    ax.axvline(0, color="black", linewidth=1)
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.set_title(title)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.legend()
-    fig.tight_layout()
-    return fig
+    if labels:
+        ax.legend()
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
-def handle_query(raw_query: str, x_min: float, x_max: float):
-    """Interprets natural language, equations, systems, quadratics, or expressions."""
+# ==============================================================================
+# UNIT CONVERSION DATABASE
+# ==============================================================================
+UNIT_FACTORS = {
+    # Length (to meters)
+    "m": ("length", 1.0), "meter": ("length", 1.0), "meters": ("length", 1.0),
+    "km": ("length", 1000.0), "kilometer": ("length", 1000.0), "kilometers": ("length", 1000.0),
+    "cm": ("length", 0.01), "centimeter": ("length", 0.01), "centimeters": ("length", 0.01),
+    "mm": ("length", 0.001), "millimeter": ("length", 0.001), "millimeters": ("length", 0.001),
+    "mi": ("length", 1609.344), "mile": ("length", 1609.344), "miles": ("length", 1609.344),
+    "yd": ("length", 0.9144), "yard": ("length", 0.9144), "yards": ("length", 0.9144),
+    "ft": ("length", 0.3048), "foot": ("length", 0.3048), "feet": ("length", 0.3048),
+    "in": ("length", 0.0254), "inch": ("length", 0.0254), "inches": ("length", 0.0254),
+    # Mass (to kg)
+    "kg": ("mass", 1.0), "kilogram": ("mass", 1.0), "kilograms": ("mass", 1.0),
+    "g": ("mass", 0.001), "gram": ("mass", 0.001), "grams": ("mass", 0.001),
+    "mg": ("mass", 1e-6), "milligram": ("mass", 1e-6), "milligrams": ("mass", 1e-6),
+    "lb": ("mass", 0.45359237), "lbs": ("mass", 0.45359237), "pound": ("mass", 0.45359237), "pounds": ("mass", 0.45359237),
+    "oz": ("mass", 0.0283495231), "ounce": ("mass", 0.0283495231), "ounces": ("mass", 0.0283495231),
+    # Time (to seconds)
+    "s": ("time", 1.0), "sec": ("time", 1.0), "second": ("time", 1.0), "seconds": ("time", 1.0),
+    "min": ("time", 60.0), "minute": ("time", 60.0), "minutes": ("time", 60.0),
+    "hr": ("time", 3600.0), "hour": ("time", 3600.0), "hours": ("time", 3600.0),
+    "day": ("time", 86400.0), "days": ("time", 86400.0),
+    # Speed (to m/s)
+    "m/s": ("speed", 1.0),
+    "km/h": ("speed", 1 / 3.6), "kph": ("speed", 1 / 3.6),
+    "mph": ("speed", 0.44704),
+    # Angles (to radians)
+    "rad": ("angle", 1.0), "radian": ("angle", 1.0), "radians": ("angle", 1.0),
+    "deg": ("angle", math.pi / 180.0), "degree": ("angle", math.pi / 180.0), "degrees": ("angle", math.pi / 180.0),
+}
+
+
+def convert_units(val: float, u_from: str, u_to: str):
+    u_from, u_to = u_from.lower(), u_to.lower()
+    # Temperature special case
+    temp_aliases = {"c": "c", "celsius": "c", "f": "f", "fahrenheit": "f", "k": "k", "kelvin": "k"}
+    if u_from in temp_aliases and u_to in temp_aliases:
+        f1, f2 = temp_aliases[u_from], temp_aliases[u_to]
+        c_val = val if f1 == "c" else ((val - 32) * 5 / 9 if f1 == "f" else val - 273.15)
+        res = c_val if f2 == "c" else (c_val * 9 / 5 + 32 if f2 == "f" else c_val + 273.15)
+        return res
+
+    if u_from in UNIT_FACTORS and u_to in UNIT_FACTORS:
+        cat1, fac1 = UNIT_FACTORS[u_from]
+        cat2, fac2 = UNIT_FACTORS[u_to]
+        if cat1 == cat2:
+            return val * fac1 / fac2
+    return None
+
+
+# ==============================================================================
+# NATURAL LANGUAGE / UNIVERSAL MATH ENGINE
+# ==============================================================================
+def handle_universal_query(raw_query: str):
     q = raw_query.strip()
+    if not q:
+        return
+
     q_lower = q.lower()
-    output_lines = []
-    fig = None
 
-    # 1. System of equations separated by ';' or 'and'
-    if ";" in q or (" and " in q_lower and q.count("=") == 2):
-        parts = [p.strip() for p in (q.split(";") if ";" in q else re.split(r"\s+and\s+", q, flags=re.I)) if p.strip()]
+    # 1. Unit Conversion: "convert 100 km to miles"
+    conv_match = re.match(r"^(?:convert\s+)?([-+]?\d*\.?\d+)\s*([a-zA-Z/]+)\s+(?:to|in|into)\s+([a-zA-Z/]+)$", q_lower)
+    if conv_match:
+        val, u1, u2 = float(conv_match.group(1)), conv_match.group(2), conv_match.group(3)
+        res = convert_units(val, u1, u2)
+        if res is not None:
+            st.success(f"**{val} {u1} = {res:.6g} {u2}**")
+            return
+
+    # 2. System of Equations separated by ';' or ',' (when '=' is present in both)
+    if ";" in q and "=" in q:
+        parts = [p.strip() for p in q.split(";") if p.strip()]
         eqs = []
+        all_syms = set()
         for p in parts:
-            p_clean = strip_question_prefix(p)
-            if "=" in p_clean:
-                lhs, rhs = p_clean.split("=", 1)
-                eqs.append(sp.Eq(clean_and_parse(lhs), clean_and_parse(rhs)))
-            else:
-                eqs.append(sp.Eq(clean_and_parse(p_clean), 0))
-
-        syms = sorted(list(set().union(*(eq.free_symbols for eq in eqs))), key=str)
-        sol = sp.solve(eqs, syms, dict=True)
-        output_lines.append("**System of Equations:**")
-        for eq in eqs:
-            output_lines.append(f"- `{sp.pretty(eq.lhs)} = {sp.pretty(eq.rhs)}`")
-
+            lhs, rhs = p.split("=", 1)
+            eq = sp.Eq(clean_and_parse(lhs), clean_and_parse(rhs))
+            eqs.append(eq)
+            all_syms.update(eq.free_symbols)
+        sol = sp.solve(eqs, list(all_syms), dict=True)
+        st.subheader("System of Equations Solution")
         if not sol:
-            output_lines.append("\n**Result:** No unique solution found (parallel or dependent lines).")
+            st.warning("No solution found (parallel or inconsistent system).")
         else:
-            output_lines.append("\n**Solutions:**")
-            for s in sol:
-                formatted = ", ".join(f"**{k} = {v}** (≈ {float(v.evalf()):.4g})" for k, v in s.items())
-                output_lines.append(f"- {formatted}")
-
-            # Plot if 2 variables x and y
-            if set(syms) <= {x, y} and len(eqs) == 2:
+            for idx, s in enumerate(sol, 1):
+                st.latex(f"\\text{{Solution {idx}: }} " + ",\\quad ".join(f"{k} = {sp.latex(v)}" for k, v in s.items()))
+            # Plot if 2 equations in x and y
+            if len(eqs) == 2 and x in all_syms and y in all_syms:
                 y_exprs, labels = [], []
                 for idx, eq in enumerate(eqs, 1):
                     y_sol = sp.solve(eq, y)
@@ -167,226 +193,47 @@ def handle_query(raw_query: str, x_min: float, x_max: float):
                         y_exprs.append(y_sol[0])
                         labels.append(f"Eq {idx}: y = {y_sol[0]}")
                 pts = []
-                if x in sol[0] and y in sol[0] and sol[0][x].is_real and sol[0][y].is_real:
-                    ix, iy = float(sol[0][x].evalf()), float(sol[0][y].evalf())
-                    pts.append((ix, iy, f"({ix:.3g}, {iy:.3g})"))
-                if y_exprs:
-                    fig = create_function_plot(y_exprs, labels, x_min, x_max, pts, "System Intersection")
-        return "\n".join(output_lines), fig
+                for s in sol:
+                    if x in s and y in s and s[x].is_real and s[y].is_real:
+                        px, py = float(s[x].evalf()), float(s[y].evalf())
+                        pts.append((px, py, f"({px:.3g}, {py:.3g})"))
+                x_center = pts[0][0] if pts else 0.0
+                render_plot(y_exprs, labels, x_center - 10, x_center + 10, pts, "System Intersection")
+        return
 
-    # 2. Graphing command
-    if q_lower.startswith(("graph ", "plot ")):
-        body = re.sub(r"^(graph|plot)\s+", "", q, flags=re.I).strip()
-        body = re.sub(r"^y\s*=\s*", "", body, flags=re.I)
-        expr = clean_and_parse(body)
-        output_lines.append(f"**Graphing:** `y = {expr}`")
-        fig = create_function_plot([expr], [f"y = {expr}"], x_min, x_max, title=f"y = {expr}")
-        return "\n".join(output_lines), fig
+    # 3. Strip conversational prefixes
+    cleaned = re.sub(
+        r"^(what is|calculate|compute|solve|evaluate|find|simplify)\s+",
+        "",
+        q,
+        flags=re.IGNORECASE,
+    ).strip().rstrip("?")
 
-    # 3. Quadratic analyzer command
-    if q_lower.startswith("quadratic "):
-        body = re.sub(r"^quadratic\s+", "", q, flags=re.I).strip()
-        if "=" in body:
-            lhs, rhs = body.split("=", 1)
-            expr = sp.expand(clean_and_parse(lhs) - clean_and_parse(rhs))
-        else:
-            expr = sp.expand(clean_and_parse(body))
-        poly = sp.Poly(expr, x)
-        if poly.degree() != 2:
-            raise ValueError("Expression is not degree 2 (quadratic).")
-        a, b, c = poly.all_coeffs()
-        disc = sp.simplify(b**2 - 4 * a * c)
-        vx = sp.simplify(-b / (2 * a))
-        vy = sp.simplify(expr.subs(x, vx))
-        roots = sp.solve(expr, x)
-
-        output_lines.extend([
-            f"**Quadratic Function:** `y = {expr}`",
-            f"- **Discriminant:** `{disc}`",
-            f"- **Vertex:** `({vx}, {vy})`",
-            f"- **Roots:** `{roots}`",
-        ])
-        pts = [(float(vx.evalf()), float(vy.evalf()), f"Vertex ({vx}, {vy})")]
-        for r in roots:
-            if r.is_real:
-                rx = float(r.evalf())
-                pts.append((rx, 0.0, f"Root ({r}, 0)"))
-        fig = create_function_plot(
-            [expr],
-            [f"y = {expr}"],
-            float(vx.evalf()) - 10,
-            float(vx.evalf()) + 10,
-            pts,
-            f"Quadratic: y = {expr}",
-        )
-        return "\n".join(output_lines), fig
-
-    # 4. Factor / Expand / Derivative / Integral
-    if q_lower.startswith("factor "):
-        expr = clean_and_parse(re.sub(r"^factor\s+", "", q, flags=re.I))
-        output_lines.append(f"**Factored:** `{sp.factor(expr)}`")
-        return "\n".join(output_lines), None
-
-    if q_lower.startswith("expand "):
-        expr = clean_and_parse(re.sub(r"^expand\s+", "", q, flags=re.I))
-        output_lines.append(f"**Expanded:** `{sp.expand(expr)}`")
-        return "\n".join(output_lines), None
-
-    if q_lower.startswith(("derivative of ", "differentiate ", "diff ")):
-        body = re.sub(r"^(derivative of|differentiate|diff)\s+", "", q, flags=re.I)
-        expr = clean_and_parse(body)
-        deriv = sp.diff(expr, x)
-        output_lines.append(f"**Derivative with respect to x:** `{deriv}`")
-        fig = create_function_plot([expr, deriv], [f"f(x) = {expr}", f"f'(x) = {deriv}"], x_min, x_max, title="Function & Derivative")
-        return "\n".join(output_lines), fig
-
-    # 5. Equation solving ('=')
-    cleaned = strip_question_prefix(q)
-    if "=" in cleaned:
-        lhs_s, rhs_s = cleaned.split("=", 1)
-        lhs = clean_and_parse(lhs_s)
-        rhs = clean_and_parse(rhs_s)
-        eq = sp.Eq(lhs, rhs)
-        syms = sorted(list(eq.free_symbols), key=str)
-        target = syms[0] if syms else x
-        sols = sp.solve(eq, target)
-        output_lines.append(f"**Equation:** `{lhs} = {rhs}`")
-        if not sols:
-            output_lines.append("**Result:** No solutions found.")
-        else:
-            output_lines.append(f"**Solutions for `{target}`:**")
-            for idx, s in enumerate(sols, 1):
-                approx = f" (≈ {complex(s.evalf()):.4g})" if s.free_symbols == set() else ""
-                output_lines.append(f"- `{target}_{idx} = {s}`{approx}")
-        if target == x and len(syms) == 1:
-            diff_expr = sp.simplify(lhs - rhs)
-            pts = [(float(s.evalf()), 0.0, f"x={s}") for s in sols if s.is_real]
-            fig = create_function_plot([diff_expr], [f"y = {diff_expr}"], x_min, x_max, pts, "Zeros of Equation")
-        return "\n".join(output_lines), fig
-
-    # 6. General expression evaluation & simplification
-    expr = clean_and_parse(cleaned)
-    simplified = sp.simplify(expr)
-    expanded = sp.expand(simplified)
-    output_lines.append(f"**Input:** `{expr}`")
-    output_lines.append(f"**Exact Result:** `{expanded}`")
-    if not expanded.free_symbols:
-        output_lines.append(f"**Decimal Approximation:** `{expanded.evalf(12)}`")
-    elif expanded.free_symbols == {x}:
-        fig = create_function_plot([expanded], [f"y = {expanded}"], x_min, x_max, title=f"y = {expanded}")
-    return "\n".join(output_lines), fig
-
-
-# ---------------------------------------------------------------------------
-# Session State for Keypad & History
-# ---------------------------------------------------------------------------
-if "query_input" not in st.session_state:
-    st.session_state.query_input = "x^2 - 5x + 6 = 0"
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-
-def append_token(tok: str):
-    st.session_state.query_input += tok
-
-
-def clear_input():
-    st.session_state.query_input = ""
-
-
-def backspace_input():
-    st.session_state.query_input = st.session_state.query_input[:-1]
-
-
-# ---------------------------------------------------------------------------
-# UI Layout
-# ---------------------------------------------------------------------------
-st.title("🧮 Algebra, Quadratic & Graphing Calculator")
-st.caption("Works directly in your browser inside GitHub Codespaces or locally.")
-
-with st.sidebar:
-    st.header("⚙️ Graph Range")
-    x_min = st.number_input("Min x", value=-10.0, step=1.0)
-    x_max = st.number_input("Max x", value=10.0, step=1.0)
-
-    st.divider()
-    st.header("💡 Try Example Queries")
-    examples = [
-        "what is (3/4 + 2/5) * sqrt(25)",
-        "3(x + 2) = 5x - 4",
-        "quadratic x^2 - 6x + 8",
-        "2x + y = 10; x - y = 2",
-        "factor x^2 - 9",
-        "derivative of x^3 - 3x",
-        "graph sin(x)",
-    ]
-    for ex in examples:
-        if st.button(ex, key=f"ex_{ex}"):
-            st.session_state.query_input = ex
-            st.rerun()
-
-col_left, col_right = st.columns([1.15, 1.0], gap="large")
-
-with col_left:
-    st.subheader("1. Enter Math, Algebra, or Question")
-    query = st.text_input(
-        "Type an expression, equation, system (;), or question:",
-        key="query_input",
-        placeholder="e.g., x^2 - 4 = 0, sqrt(50), 2x+y=7; x-y=2",
+    # 4. Graph command: "graph sin(x) from -10 to 10"
+    graph_match = re.match(
+        r"^(?:graph|plot)\s+(.+?)(?:\s+from\s+([-+]?\d*\.?\d+)\s+to\s+([-+]?\d*\.?\d+))?$",
+        cleaned,
+        flags=re.IGNORECASE,
     )
+    if graph_match:
+        funcs_raw = graph_match.group(1).split(",")
+        xmin = float(graph_match.group(2)) if graph_match.group(2) else -10.0
+        xmax = float(graph_match.group(3)) if graph_match.group(3) else 10.0
+        exprs, labels = [], []
+        for f_str in funcs_raw:
+            f_str = re.sub(r"^y\s*=\s*", "", f_str.strip(), flags=re.IGNORECASE)
+            e = clean_and_parse(f_str)
+            exprs.append(e)
+            labels.append(f"y = {e}")
+        render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
+        return
 
-    # Keypad Grid
-    keypad_rows = [
-        ["7", "8", "9", "/", "sqrt(", "^"],
-        ["4", "5", "6", "*", "(", ")"],
-        ["1", "2", "3", "-", "x", "y"],
-        ["0", ".", "=", "+", ";", "pi"],
-    ]
-    for r_idx, row in enumerate(keypad_rows):
-        cols = st.columns(len(row))
-        for c_idx, label in enumerate(row):
-            cols[c_idx].button(
-                label,
-                key=f"btn_{r_idx}_{c_idx}",
-                on_click=append_token,
-                args=(label,),
-            )
-
-    action_cols = st.columns(3)
-    action_cols[0].button("⌫ Backspace", on_click=backspace_input)
-    action_cols[1].button("🗑️ Clear", on_click=clear_input)
-    solve_clicked = action_cols[2].button("🚀 Solve / Graph", type="primary")
-
-    st.divider()
-    st.subheader("2. Answer")
-    if solve_clicked or query.strip():
-        if query.strip():
-            try:
-                answer_md, chart_fig = handle_query(query, x_min, x_max)
-                st.success("Calculated successfully")
-                st.markdown(answer_md)
-                if solve_clicked:
-                    st.session_state.history.insert(0, (query, answer_md))
-            except Exception as exc:
-                chart_fig = None
-                st.error(f"Could not parse input: {exc}")
-        else:
-            chart_fig = None
-            st.info("Enter an expression or click an example in the sidebar.")
-    else:
-        chart_fig = None
-
-with col_right:
-    st.subheader("3. Interactive Graph")
-    if chart_fig is not None:
-        st.pyplot(chart_fig)
-        plt.close(chart_fig)
-    else:
-        st.info("Enter an equation in `x`, a quadratic, a system of 2 equations, or `graph ...` to see its plot here.")
-
-    if st.session_state.history:
-        st.divider()
-        st.subheader("🕒 Recent Calculations")
-        for past_q, past_a in st.session_state.history[:5]:
-            with st.expander(past_q):
-                st.markdown(past_a)
+    # 5. Calculus: Derivative
+    deriv_match = re.match(r"^(?:derivative|differentiate|d/dx)\s+(?:of\s+)?(.+)$", cleaned, flags=re.IGNORECASE)
+    if deriv_match:
+        expr = clean_and_parse(deriv_match.group(1))
+        d1 = sp.diff(expr, x)
+        d2 = sp.diff(expr, x, 2)
+        st.subheader("Derivative Results")
+        st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
+        st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))

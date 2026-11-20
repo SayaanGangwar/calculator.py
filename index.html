@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OmniMath — Universal Algebra & Graphing Calculator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/13.2.0/math.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --btn-bg: #334155;
+      --btn-hover: #475569;
+      --success: #10b981;
+      --error: #ef4444;
+    }
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+    body {
+      margin: 0; padding: 20px;
+      background: var(--bg); color: var(--text);
+      display: flex; justify-content: center;
+    }
+    .container { width: 100%; max-width: 1040px; }
+    header { text-align: center; margin-bottom: 20px; }
+    header h1 { margin: 0 0 6px; font-size: 2rem; }
+    header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+
+    .tabs {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 12px;
+    }
+    .tab-btn {
+      background: var(--card); color: var(--muted);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 9px 14px; cursor: pointer; font-weight: 600; transition: 0.2s; font-size: 0.9rem;
+    }
+    .tab-btn:hover { color: var(--text); border-color: var(--accent); }
+    .tab-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+    .panel {
+      display: none; background: var(--card);
+      border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+    }
+    .panel.active { display: block; }
+
+    input, textarea, select {
+      width: 100%; padding: 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg);
+      color: var(--text); font-size: 1rem; margin-bottom: 12px;
+    }
+    input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+    .keypad {
+      display: grid; grid-template-columns: repeat(7, 1fr);
+      gap: 8px; margin-bottom: 14px;
+    }
+    .key {
+      background: var(--btn-bg); color: var(--text);
+      border: none; border-radius: 8px; padding: 11px 6px;
+      font-size: 1rem; font-weight: 600; cursor: pointer; transition: 0.15s;
+    }
+    .key:hover { background: var(--btn-hover); }
+
+    .action-row { display: flex; gap: 10px; margin-bottom: 16px; }
+    .btn-primary {
+      flex: 2; background: var(--accent); color: white;
+      border: none; border-radius: 8px; padding: 12px;
+      font-size: 1rem; font-weight: 700; cursor: pointer;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary {
+      flex: 1; background: var(--btn-bg); color: white;
+      border: none; border-radius: 8px; padding: 12px;
+      font-size: 1rem; font-weight: 600; cursor: pointer;
+    }
+    .btn-secondary:hover { background: var(--btn-hover); }
+
+    .result-box {
+      background: var(--bg); border-left: 4px solid var(--success);
+      padding: 14px 16px; border-radius: 8px; margin-top: 12px;
+      line-height: 1.7; white-space: pre-wrap; font-size: 1.02rem;
+    }
+    .result-box.error { border-left-color: var(--error); color: #fca5a5; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .plot-box { width: 100%; height: 400px; margin-top: 16px; border-radius: 8px; overflow: hidden; }
+    .examples { margin-top: 16px; font-size: 0.9rem; color: var(--muted); line-height: 2; }
+    .examples code {
+      background: var(--bg); padding: 4px 8px; border-radius: 6px;
+      color: #93c5fd; cursor: pointer; border: 1px solid var(--border);
+    }
+    .examples code:hover { border-color: var(--accent); }
+    label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 0.9rem; }
+    @media (max-width: 650px) {
+      .keypad { grid-template-columns: repeat(4, 1fr); }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .action-row { flex-wrap: wrap; }
+      .action-row > button { flex: 1 1 130px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🧮 OmniMath Universal Calculator</h1>
+      <p>Algebra • Quadratics • Systems • Calculus • Matrices • Statistics • Number Theory • Units • Graphing</p>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" type="button" aria-selected="true" onclick="switchTab('ask', this)">💬 Ask Anything & Graph</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('quad', this)">📈 Quadratics</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('sys', this)">🔀 Systems</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('calc', this)">∫ Calculus</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('matrix', this)">🔢 Matrices</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('stats', this)">📊 Statistics</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('num', this)">🔐 Number Theory</button>
+      <button class="tab-btn" type="button" aria-selected="false" onclick="switchTab('units', this)">📏 Unit Converter</button>
+    </div>
+
+    <!-- TAB 1: ASK ANYTHING & GRAPH -->
+    <div id="tab-ask" class="panel active">
+      <label for="main-input">Enter an expression, equation, or graph</label>
+      <input id="main-input" type="text" value="quadratic x^2 - 6x + 8"
+             placeholder="Ask anything: (3/4 + 2/5)*sqrt(25), 3(x+2)=5x-4, derivative of x^3, graph sin(x), 100 km to miles"
+             onkeydown="if(event.key==='Enter') runUniversal()" />
+
+      <div class="keypad">
+        <button class="key" onclick="addTok('7')">7</button>
+        <button class="key" onclick="addTok('8')">8</button>
+        <button class="key" onclick="addTok('9')">9</button>
+        <button class="key" onclick="addTok('/')">/</button>
+        <button class="key" onclick="addTok('sqrt(')">√</button>
+        <button class="key" onclick="addTok('^2')">x²</button>
+        <button class="key" onclick="addTok('x')">x</button>
+
+        <button class="key" onclick="addTok('4')">4</button>
+        <button class="key" onclick="addTok('5')">5</button>
+        <button class="key" onclick="addTok('6')">6</button>
+        <button class="key" onclick="addTok('*')">×</button>
+        <button class="key" onclick="addTok('pi')">π</button>
+        <button class="key" onclick="addTok('e')">e</button>
+        <button class="key" onclick="addTok('y')">y</button>
+
+        <button class="key" onclick="addTok('1')">1</button>
+        <button class="key" onclick="addTok('2')">2</button>
+        <button class="key" onclick="addTok('3')">3</button>
+        <button class="key" onclick="addTok('-')">−</button>
+        <button class="key" onclick="addTok('sin(')">sin</button>
+        <button class="key" onclick="addTok('cos(')">cos</button>
+        <button class="key" onclick="addTok('tan(')">tan</button>
+
+        <button class="key" onclick="addTok('0')">0</button>
+        <button class="key" onclick="addTok('.')">.</button>
+        <button class="key" onclick="addTok('(')">(</button>
+        <button class="key" onclick="addTok(')')">)</button>
+        <button class="key" onclick="addTok('+')">+</button>
+        <button class="key" onclick="addTok('=')">=</button>
+        <button class="key" onclick="backspace()">⌫</button>
+      </div>
+
+      <div class="action-row">
+        <button class="btn-primary" onclick="runUniversal()">🚀 Solve / Graph</button>
+        <button class="btn-secondary" onclick="clearAll()">🧹 Clear</button>
+      </div>
+
+      <div id="main-output"></div>
+      <div id="plot-area" class="plot-box"></div>
+
+      <div class="examples">
+        <strong>Click an example to try:</strong><br>
+        <code onclick="tryEx('(3/4 + 2/5) * sqrt(16)')">(3/4 + 2/5) * sqrt(16)</code>
+        <code onclick="tryEx('simplify (x + 3)^2 - (x^2 + 9)')">simplify (x + 3)^2 - (x^2 + 9)</code>
+        <code onclick="tryEx('3(x + 2) = 5x - 4')">3(x + 2) = 5x - 4</code>
+        <code onclick="tryEx('quadratic x^2 - 6x + 8')">quadratic x^2 - 6x + 8</code>
+        <code onclick="tryEx('derivative of x^3 * sin(x)')">derivative of x^3 * sin(x)</code>
+        <code onclick="tryEx('integral of x^2 from 0 to 3')">integral of x^2 from 0 to 3</code>
+        <code onclick="tryEx('graph x^2 - 4, 2x + 1')">graph x^2 - 4, 2x + 1</code>
+        <code onclick="tryEx('100 km to miles')">100 km to miles</code>
+      </div>
+    </div>
+
+    <!-- TAB 2: QUADRATIC ANALYZER -->
+    <div id="tab-quad" class="panel">
+      <h3>Quadratic Equation Solver: ax² + bx + c = 0</h3>
+      <div class="grid-3">
+        <div><label for="qa">a</label><input id="qa" type="number" value="1" step="any"></div>
+        <div><label for="qb">b</label><input id="qb" type="number" value="-5" step="any"></div>
+        <div><label for="qc">c</label><input id="qc" type="number" value="6" step="any"></div>
+      </div>
+      <button class="btn-primary" type="button" style="width:100%" onclick="solveQuadraticTab()">Analyze & Graph Parabola</button>
+      <div id="quad-output"></div>
+      <div id="quad-plot" class="plot-box"></div>
+    </div>
+
+    <!-- TAB 3: SYSTEMS OF EQUATIONS -->
+    <div id="tab-sys" class="panel">
+      <h3>2×2 Linear System Solver</h3>
+      <p style="color:var(--muted)">Form: a₁x + b₁y = c₁ &nbsp;and&nbsp; a₂x + b₂y = c₂</p>
+      <div class="grid-3">
+        <div><label for="sa1">a₁</label><input id="sa1" type="number" value="2" step="any"></div>
+        <div><label for="sb1">b₁</label><input id="sb1" type="number" value="1" step="any"></div>
+        <div><label for="sc1">c₁</label><input id="sc1" type="number" value="10" step="any"></div>
+      </div>
+      <div class="grid-3">
+        <div><label for="sa2">a₂</label><input id="sa2" type="number" value="1" step="any"></div>
+        <div><label for="sb2">b₂</label><input id="sb2" type="number" value="-1" step="any"></div>
+        <div><label for="sc2">c₂</label><input id="sc2" type="number" value="2" step="any"></div>
+      </div>
+      <button class="btn-primary" type="button" style="width:100%" onclick="solveSystemTab()">Solve System</button>
+      <div id="sys-output" aria-live="polite"></div>
+    </div>
+
+    <!-- TAB 4: CALCULUS -->
+    <div id="tab-calc" class="panel">
+      <h3>Derivative and Definite Integral</h3>
+      <label for="calc-expression">Function of x</label>
+      <input id="calc-expression" type="text" value="x^3 * sin(x)" placeholder="e.g. x^3 * sin(x)">
+      <div class="grid-2">
+        <div><label for="calc-lower">Integral lower bound (optional)</label><input id="calc-lower" type="number" step="any" placeholder="0"></div>
+        <div><label for="calc-upper">Integral upper bound (optional)</label><input id="calc-upper" type="number" step="any" placeholder="3"></div>
+      </div>
+      <button class="btn-primary" type="button" style="width:100%" onclick="runCalculus()">Differentiate & Integrate</button>
+      <div id="calc-output" aria-live="polite"></div>
+      <div id="calc-plot" class="plot-box"></div>
+    </div>
+
+    <!-- TAB 5: MATRICES -->
+    <div id="tab-matrix" class="panel">
+      <h3>Matrix Calculator</h3>
+      <label for="matrix-input">Enter a matrix (rows separated by semicolons)</label>
+      <textarea id="matrix-input" rows="3" placeholder="1, 2; 3, 4">1, 2; 3, 4</textarea>
+      <label for="matrix-operation">Operation</label>
+      <select id="matrix-operation">
+        <option value="det">Determinant</option>
+        <option value="inv">Inverse</option>
+        <option value="transpose">Transpose</option>
+      </select>
+      <button class="btn-primary" type="button" style="width:100%" onclick="runMatrix()">Calculate</button>
+      <div id="matrix-output" aria-live="polite"></div>
+    </div>
+
+    <!-- TAB 6: STATISTICS -->
+    <div id="tab-stats" class="panel">
+      <h3>Descriptive Statistics</h3>
+      <label for="stats-input">Enter numbers separated by commas or spaces</label>
+      <input id="stats-input" type="text" value="2, 4, 4, 4, 5, 5, 7, 9" placeholder="e.g. 2, 4, 4, 5, 7">
+      <button class="btn-primary" type="button" style="width:100%" onclick="runStats()">Analyze Data</button>
+      <div id="stats-output" aria-live="polite"></div>
+    </div>
+
+    <!-- TAB 7: NUMBER THEORY -->
+    <div id="tab-num" class="panel">
+      <h3>Number Theory</h3>
+      <div class="grid-2">
+        <div><label for="num-a">First integer</label><input id="num-a" type="text" inputmode="numeric" value="48"></div>
+        <div><label for="num-b">Second integer</label><input id="num-b" type="text" inputmode="numeric" value="18"></div>
+      </div>
+      <div class="action-row">
+        <button class="btn-primary" type="button" onclick="runNumberTheory('gcd')">GCD</button>
+        <button class="btn-primary" type="button" onclick="runNumberTheory('lcm')">LCM</button>
+        <button class="btn-secondary" type="button" onclick="runNumberTheory('prime')">Test first for primality</button>
+      </div>
+      <div id="num-output" aria-live="polite"></div>
+    </div>
+
+    <!-- TAB 8: UNIT CONVERTER -->
+    <div id="tab-units" class="panel">
+      <h3>Unit Converter</h3>
+      <label for="unit-query">Conversion (for example: 100 km to miles)</label>
+      <input id="unit-query" type="text" value="100 km to miles" placeholder="e.g. 100 km to miles">
+      <button class="btn-primary" type="button" style="width:100%" onclick="runUnitConversion()">Convert</button>
+      <div id="units-output" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <script>
+    const UNIT_FACTORS = {
+      m: ['length', 1], meter: ['length', 1], meters: ['length', 1],
+      km: ['length', 1000], kilometer: ['length', 1000], kilometers: ['length', 1000],
+      cm: ['length', 0.01], mm: ['length', 0.001],
+      mi: ['length', 1609.344], mile: ['length', 1609.344], miles: ['length', 1609.344],
+      ft: ['length', 0.3048], feet: ['length', 0.3048], in: ['length', 0.0254],
+      kg: ['mass', 1], g: ['mass', 0.001], lb: ['mass', 0.45359237], lbs: ['mass', 0.45359237],
+      s: ['time', 1], sec: ['time', 1], min: ['time', 60], h: ['time', 3600], hr: ['time', 3600],
+      'm/s': ['speed', 1], 'km/h': ['speed', 1 / 3.6], mph: ['speed', 0.44704],
+      rad: ['angle', 1], deg: ['angle', Math.PI / 180]
+    };
+
+    function switchTab(id, btn) {
+      document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(tab => {
+        tab.classList.remove('active');
+        tab.setAttribute('aria-selected', 'false');
+      });
+      const panel = document.getElementById(`tab-${id}`);
+      if (!panel) throw new Error(`Unknown calculator tab: ${id}`);
+      panel.classList.add('active');
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
+    }
+
+    function addTok(token) {
+      const input = document.getElementById('main-input');
+      input.value += token;
+      input.focus();
+    }
+
+    function backspace() {
+      const input = document.getElementById('main-input');
+      input.value = input.value.slice(0, -1);
+      input.focus();
+    }
+
+    function clearAll() {
+      document.getElementById('main-input').value = '';
+      showResult('main-output', '');
+      Plotly.purge('plot-area');
+      document.getElementById('main-input').focus();
+    }
+
+    function tryEx(text) {
+      document.getElementById('main-input').value = text;
+      runUniversal();
+    }
+
+    function showResult(elId, text, isError = false) {
+      const output = document.getElementById(elId);
+      output.replaceChildren();
+      if (!text) return;
+      const box = document.createElement('div');
+      box.className = `result-box${isError ? ' error' : ''}`;
+      box.textContent = String(text);
+      output.append(box);
+    }
+
+    function plotFunctions(divId, exprStrings, xMin = -10, xMax = 10, points = [], title = 'Graph') {
+      if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || xMax <= xMin) {
+        throw new Error('Graph bounds must be finite and the upper bound must be greater than the lower bound.');
+      }
+      const xs = Array.from({ length: 501 }, (_, i) => xMin + ((xMax - xMin) * i) / 500);
+      const traces = exprStrings.map(str => {
+        const clean = str.replace(/^y\s*=\s*/i, '').trim();
+        const compiled = math.compile(clean);
+        const ys = xs.map(x => {
+          try {
+            const value = compiled.evaluate({ x });
+            return (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) < 1e5) ? value : null;
+          } catch {
+            return null;
+          }
+        });
+        return { x: xs, y: ys, mode: 'lines', name: `y = ${clean}`, line: { width: 3 } };
+      });
+
+      points.forEach(point => {
+        traces.push({
+          x: [point.x], y: [point.y], mode: 'markers+text',
+          name: point.label, text: [point.label], textposition: 'top center',
+          marker: { size: 10, color: '#facc15' }
+        });
+      });
+
+      Plotly.newPlot(divId, traces, {
+        title: { text: title, font: { color: '#f8fafc' } },
+        paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
+        xaxis: { color: '#94a3b8', gridcolor: '#1e293b', zerolinecolor: '#64748b' },
+        yaxis: { color: '#94a3b8', gridcolor: '#1e293b', zerolinecolor: '#64748b' },
+        legend: { font: { color: '#f8fafc' } }
+      }, { responsive: true });
+    }
+
+    function numericIntegrate(exprStr, a, b, n = 1000) {
+      if (!Number.isFinite(a) || !Number.isFinite(b) || n <= 0 || n % 2 !== 0) {
+        throw new Error('Integration bounds must be finite and the sample count must be a positive even number.');
+      }
+      const fn = math.compile(exprStr);
+      const evaluate = x => {
+        const value = fn.evaluate({ x });
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          throw new Error('The integrand must evaluate to a finite real number over the integration interval.');
+        }
+        return value;
+      };
+      const h = (b - a) / n;
+      let sum = evaluate(a) + evaluate(b);
+      for (let i = 1; i < n; i++) sum += (i % 2 === 0 ? 2 : 4) * evaluate(a + i * h);
+      return (h / 3) * sum;
+    }
+
+    function solveLinearOrPoly(lhsStr, rhsStr) {
+      const expression = `(${lhsStr}) - (${rhsStr})`;
+      const fn = math.compile(expression);
+      const derivative = math.derivative(expression, 'x').compile();
+      const roots = [];
+
+      for (let start = -50; start <= 50; start += 2.5) {
+        let value = start;
+        for (let iter = 0; iter < 50; iter++) {
+          const yValue = fn.evaluate({ x: value });
+          const slope = derivative.evaluate({ x: value });
+          if (!Number.isFinite(yValue) || !Number.isFinite(slope) || Math.abs(slope) < 1e-12) break;
+          const next = value - yValue / slope;
+          if (!Number.isFinite(next)) break;
+          if (Math.abs(next - value) < 1e-12) {
+            value = next;
+            break;
+          }
+          value = next;
+        }
+        const residual = fn.evaluate({ x: value });
+        if (Number.isFinite(residual) && Math.abs(residual) < 1e-7) {
+          const rounded = Math.round(value * 1e6) / 1e6;
+          if (!roots.some(root => Math.abs(root - rounded) < 1e-4)) roots.push(rounded);
+        }
+      }
+      return roots.sort((a, b) => a - b);
+    }
+
+    function analyzeQuadraticExpr(exprStr, outputId, plotId) {
+      const fn = math.simplify(exprStr).compile();
+      const evaluate = x => {
+        const value = fn.evaluate({ x });
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          throw new Error('Enter a real-valued quadratic expression in x.');
+        }
+        return value;
+      };
+      const c = evaluate(0);
+      const atOne = evaluate(1);
+      const atMinusOne = evaluate(-1);
+      const a = (atOne + atMinusOne - 2 * c) / 2;
+      const b = (atOne - atMinusOne) / 2;
+      if (Math.abs(a) < 1e-12) throw new Error('This expression is not quadratic (the x² coefficient is zero).');
+
+      const atTwo = evaluate(2);
+      const atThree = evaluate(3);
+      const tolerance = value => 1e-8 * Math.max(1, Math.abs(value));
+      if (Math.abs(atTwo - (4 * a + 2 * b + c)) > tolerance(atTwo) ||
+          Math.abs(atThree - (9 * a + 3 * b + c)) > tolerance(atThree)) {
+        throw new Error('The expression must be a polynomial of degree 2 in x.');
+      }
+
+      let discriminant = b * b - 4 * a * c;
+      const discTolerance = 1e-12 * Math.max(1, b * b, Math.abs(4 * a * c));
+      if (Math.abs(discriminant) <= discTolerance) discriminant = 0;
+      const vertexX = -b / (2 * a);
+      const vertexY = a * vertexX * vertexX + b * vertexX + c;
+      let rootText;
+      const points = [{ x: vertexX, y: vertexY, label: `Vertex (${vertexX.toFixed(2)}, ${vertexY.toFixed(2)})` }];
+
+      if (discriminant > 0) {
+        const root1 = (-b + Math.sqrt(discriminant)) / (2 * a);
+        const root2 = (-b - Math.sqrt(discriminant)) / (2 * a);
+        rootText = `x₁ = ${root1.toFixed(4)}, x₂ = ${root2.toFixed(4)}`;
+        points.push({ x: root1, y: 0, label: `Root (${root1.toFixed(2)}, 0)` });
+        points.push({ x: root2, y: 0, label: `Root (${root2.toFixed(2)}, 0)` });
+      } else if (discriminant === 0) {
+        const root = -b / (2 * a);
+        rootText = `x = ${root.toFixed(4)} (double root)`;
+        points.push({ x: root, y: 0, label: `Root (${root.toFixed(2)}, 0)` });
+      } else {
+        const real = (-b / (2 * a)).toFixed(4);
+        const imaginary = (Math.sqrt(-discriminant) / (2 * Math.abs(a))).toFixed(4);
+        rootText = `x₁ = ${real} + ${imaginary}i, x₂ = ${real} - ${imaginary}i`;
+      }
+
+      showResult(outputId,
+        `Quadratic: ${a}x² + (${b})x + (${c}) = 0\n` +
+        `Discriminant (Δ): ${discriminant}\n` +
+        `Vertex: (${vertexX.toFixed(4)}, ${vertexY.toFixed(4)})\n` +
+        `Roots: ${rootText}`
+      );
+      plotFunctions(plotId, [`${a}*x^2 + (${b})*x + (${c})`], vertexX - 10, vertexX + 10, points, 'Quadratic Parabola');
+    }
+
+    function parseUnitConversion(query) {
+      const match = query.trim().match(/^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*([a-z/]+)\s+(?:to|in|into)\s+([a-z/]+)$/i);
+      if (!match) return null;
+      const value = Number(match[1]);
+      const from = match[2].toLowerCase();
+      const to = match[3].toLowerCase();
+      if (from in UNIT_FACTORS && to in UNIT_FACTORS) {
+        const [fromCategory, fromFactor] = UNIT_FACTORS[from];
+        const [toCategory, toFactor] = UNIT_FACTORS[to];
+        if (fromCategory === toCategory) return { value, from, to, result: value * fromFactor / toFactor };
+      }
+      const temperatures = {
+        c: ['c', 'celsius'], celsius: ['c', 'celsius'],
+        f: ['f', 'fahrenheit'], fahrenheit: ['f', 'fahrenheit'],
+        k: ['k', 'kelvin'], kelvin: ['k', 'kelvin']
+      };
+      if (from in temperatures && to in temperatures) {
+        const fromUnit = temperatures[from][0];
+        const toUnit = temperatures[to][0];
+        const celsius = fromUnit === 'c' ? value : fromUnit === 'f' ? (value - 32) * 5 / 9 : value - 273.15;
+        const result = toUnit === 'c' ? celsius : toUnit === 'f' ? celsius * 9 / 5 + 32 : celsius + 273.15;
+        return { value, from, to, result };
+      }
+      throw new Error(`Unsupported or incompatible units: ${from} to ${to}.`);
+    }
+
+    function runUniversal() {
+      const raw = document.getElementById('main-input').value.trim();
+      Plotly.purge('plot-area');
+      if (!raw) {
+        showResult('main-output', 'Enter an expression, equation, or conversion.', true);
+        return;
+      }
+
+      try {
+        const cleaned = raw.replace(/^(what is|calculate|compute|solve|evaluate|find)\s+/i, '').replace(/\?$/, '').trim();
+        const conversion = parseUnitConversion(cleaned);
+        if (conversion) {
+          showResult('main-output', `${conversion.value} ${conversion.from} = ${Number(conversion.result.toPrecision(10))} ${conversion.to}`);
+          return;
+        }
+
+        if (/^quadratic\s+/i.test(cleaned)) {
+          const expression = cleaned.replace(/^quadratic\s+/i, '').split('=')[0];
+          analyzeQuadraticExpr(expression, 'main-output', 'plot-area');
+          return;
+        }
+
+        if (/^(graph|plot)\s+/i.test(cleaned)) {
+          const functions = cleaned.replace(/^(graph|plot)\s+/i, '').split(',').map(value => value.trim()).filter(Boolean);
+          if (!functions.length) throw new Error('Enter at least one function to graph.');
+          showResult('main-output', `Plotting: ${functions.join(', ')}`);
+          plotFunctions('plot-area', functions, -10, 10, [], 'Interactive Function Graph');
+          return;
+        }
+
+        const integralMatch = cleaned.match(/^(?:integral|integrate)\s+(?:of\s+)?(.+?)\s+from\s+([^\s]+)\s+to\s+([^\s]+)$/i);
+        if (integralMatch) {
+          const expression = integralMatch[1];
+          const lower = math.evaluate(integralMatch[2]);
+          const upper = math.evaluate(integralMatch[3]);
+          const area = numericIntegrate(expression, lower, upper);
+          showResult('main-output', `Definite integral: ∫[${lower} to ${upper}] (${expression}) dx = ${area.toFixed(6)}`);
+          plotFunctions('plot-area', [expression], Math.min(lower, upper) - 2, Math.max(lower, upper) + 2, [], `Area under y = ${expression}`);
+          return;
+        }
+
+        if (/^(derivative|differentiate|d\/dx)\s+/i.test(cleaned)) {
+          const expression = cleaned.replace(/^(derivative|differentiate|d\/dx)\s+(of\s+)?/i, '');
+          const first = math.derivative(expression, 'x').toString();
+          const second = math.derivative(first, 'x').toString();
+          showResult('main-output', `f(x): ${expression}\nf'(x): ${first}\nf''(x): ${second}`);
+          plotFunctions('plot-area', [expression, first], -10, 10, [], 'Function & First Derivative');
+          return;
+        }
+
+        if (/^simplify\s+/i.test(cleaned)) {
+          const expression = cleaned.replace(/^simplify\s+/i, '');
+          showResult('main-output', `Simplified: ${math.simplify(expression).toString()}`);
+          return;
+        }
+
+        if (cleaned.includes('=')) {
+          const sides = cleaned.split('=');
+          if (sides.length !== 2 || !sides[0].trim() || !sides[1].trim()) {
+            throw new Error('Enter one equation with an expression on each side.');
+          }
+          if (math.simplify(`(${sides[0]}) - (${sides[1]})`).toString() === '0') {
+            showResult('main-output', 'The equation is an identity; every real x is a solution.');
+            return;
+          }
+          const roots = solveLinearOrPoly(sides[0], sides[1]);
+          if (!roots.length) {
+            showResult('main-output', 'No real solutions found by the numerical solver.', true);
+          } else {
+            showResult('main-output', `Equation: ${sides[0].trim()} = ${sides[1].trim()}\nSolutions: x = ${roots.join(', x = ')}`);
+          }
+          return;
+        }
+
+        if (/\bx\b/i.test(cleaned) && !/\b(to|in|deg|rad|km|mi|kg|lb)\b/i.test(cleaned)) {
+          const simplified = math.simplify(cleaned).toString();
+          showResult('main-output', `Simplified expression: ${simplified}`);
+          plotFunctions('plot-area', [simplified], -10, 10, [], `y = ${simplified}`);
+          return;
+        }
+
+        const result = math.evaluate(cleaned);
+        let output = `Result: ${math.format(result, { precision: 12 })}`;
+        if (typeof result === 'number' && !Number.isInteger(result)) {
+          const fraction = math.fraction(result);
+          if (fraction.d <= 10000) output += `\nExact fraction: ${fraction.s * fraction.n}/${fraction.d}`;
+        }
+        showResult('main-output', output);
+      } catch (error) {
+        showResult('main-output', `Error: ${error.message}`, true);
+      }
+    }
+
+    function solveQuadraticTab() {
+      Plotly.purge('quad-plot');
+      try {
+        const coefficients = ['qa', 'qb', 'qc'].map(id => Number(document.getElementById(id).value));
+        if (!coefficients.every(Number.isFinite)) throw new Error('Enter a finite number for each coefficient.');
+        analyzeQuadraticExpr(`${coefficients[0]}*x^2 + (${coefficients[1]})*x + (${coefficients[2]})`, 'quad-output', 'quad-plot');
+      } catch (error) {
+        showResult('quad-output', error.message, true);
+      }
+    }
+
+    function solveSystemTab() {
+      const values = ['sa1', 'sb1', 'sc1', 'sa2', 'sb2', 'sc2'].map(id => Number(document.getElementById(id).value));
+      if (!values.every(Number.isFinite)) {
+        showResult('sys-output', 'Enter a finite number in every coefficient field.', true);
+        return;
+      }
+      const [a1, b1, c1, a2, b2, c2] = values;
+      const determinant = a1 * b2 - a2 * b1;
+      if (Math.abs(determinant) < 1e-12) {
+        const impossibleZeroEquation = (Math.abs(a1) < 1e-12 && Math.abs(b1) < 1e-12 && Math.abs(c1) >= 1e-12) ||
+          (Math.abs(a2) < 1e-12 && Math.abs(b2) < 1e-12 && Math.abs(c2) >= 1e-12);
+        const sameLine = !impossibleZeroEquation &&
+          Math.abs(a1 * c2 - a2 * c1) < 1e-12 &&
+          Math.abs(b1 * c2 - b2 * c1) < 1e-12;
+        showResult('sys-output', sameLine ? 'The equations describe the same line; there are infinitely many solutions.' :
+          'The lines are parallel; there is no solution.', true);
+        return;
+      }
+      const x = (c1 * b2 - c2 * b1) / determinant;
+      const y = (a1 * c2 - a2 * c1) / determinant;
+      showResult('sys-output', `Solution: x = ${x.toFixed(4)}, y = ${y.toFixed(4)}`);
+    }
+
+    function runCalculus() {
+      const expression = document.getElementById('calc-expression').value.trim();
+      Plotly.purge('calc-plot');
+      try {
+        if (!expression) throw new Error('Enter a function of x.');
+        const first = math.derivative(expression, 'x').toString();
+        const second = math.derivative(first, 'x').toString();
+        let output = `f(x): ${expression}\nf'(x): ${first}\nf''(x): ${second}`;
+        const lowerInput = document.getElementById('calc-lower').value;
+        const upperInput = document.getElementById('calc-upper').value;
+        if (lowerInput !== '' || upperInput !== '') {
+          if (lowerInput === '' || upperInput === '') throw new Error('Enter both integral bounds, or leave both blank.');
+          const lower = Number(lowerInput);
+          const upper = Number(upperInput);
+          const integral = numericIntegrate(expression, lower, upper);
+          output += `\nDefinite integral from ${lower} to ${upper}: ${integral.toFixed(6)}`;
+        }
+        showResult('calc-output', output);
+        plotFunctions('calc-plot', [expression, first], -10, 10, [], 'Function & First Derivative');
+      } catch (error) {
+        showResult('calc-output', error.message, true);
+      }
+    }
+
+    function runMatrix() {
+      try {
+        const rows = document.getElementById('matrix-input').value.trim().split(';').map(row =>
+          row.trim().split(/[,\s]+/).filter(Boolean).map(Number)
+        );
+        if (!rows.length || rows.some(row => !row.length || row.some(value => !Number.isFinite(value))) ||
+            rows.some(row => row.length !== rows[0].length)) {
+          throw new Error('Enter a rectangular matrix of finite numbers, such as 1, 2; 3, 4.');
+        }
+        const operation = document.getElementById('matrix-operation').value;
+        if (operation === 'det' && rows.length !== rows[0].length) throw new Error('A determinant requires a square matrix.');
+        if (operation === 'inv' && rows.length !== rows[0].length) throw new Error('An inverse requires a square matrix.');
+        const matrix = math.matrix(rows);
+        const result = operation === 'det' ? math.det(matrix) :
+          operation === 'inv' ? math.inv(matrix) : math.transpose(matrix);
+        showResult('matrix-output', `${operation === 'det' ? 'Determinant' : operation === 'inv' ? 'Inverse' : 'Transpose'}:\n${math.format(result)}`);
+      } catch (error) {
+        showResult('matrix-output', error.message, true);
+      }
+    }
+
+    function runStats() {
+      try {
+        const values = document.getElementById('stats-input').value.trim().split(/[,\s]+/).filter(Boolean).map(Number);
+        if (!values.length || values.some(value => !Number.isFinite(value))) {
+          throw new Error('Enter one or more finite numbers separated by commas or spaces.');
+        }
+        const sorted = [...values].sort((a, b) => a - b);
+        const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+        const middle = Math.floor(sorted.length / 2);
+        const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+        const counts = new Map();
+        values.forEach(value => counts.set(value, (counts.get(value) || 0) + 1));
+        const maxCount = Math.max(...counts.values());
+        const modes = [...counts].filter(([, count]) => count === maxCount).map(([value]) => value);
+        const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+        showResult('stats-output',
+          `Count: ${values.length}\nMean: ${mean}\nMedian: ${median}\nMode: ${maxCount === 1 ? 'none' : modes.join(', ')}\n` +
+          `Population standard deviation: ${Math.sqrt(variance)}\nMinimum: ${sorted[0]}\nMaximum: ${sorted[sorted.length - 1]}`
+        );
+      } catch (error) {
+        showResult('stats-output', error.message, true);
+      }
+    }
+
+    function runNumberTheory(operation) {
+      try {
+        const parseInteger = id => {
+          const value = document.getElementById(id).value.trim();
+          if (!/^[+-]?\d+$/.test(value)) throw new Error('Enter whole numbers only.');
+          return BigInt(value);
+        };
+        const first = parseInteger('num-a');
+        const absFirst = first < 0n ? -first : first;
+        if (operation === 'prime') {
+          if (absFirst > 1000000000000n) throw new Error('Primality checks are limited to integers up to 1,000,000,000,000.');
+          let prime = absFirst > 1n;
+          for (let divisor = 2n; prime && divisor * divisor <= absFirst; divisor += divisor === 2n ? 1n : 2n) {
+            if (absFirst % divisor === 0n) prime = false;
+          }
+          showResult('num-output', `${first} is ${prime ? 'prime' : 'not prime'}.`);
+          return;
+        }
+        if (operation === 'gcd' || operation === 'lcm') {
+          const second = parseInteger('num-b');
+          const absSecond = second < 0n ? -second : second;
+          let a = absFirst;
+          let b = absSecond;
+          while (b !== 0n) [a, b] = [b, a % b];
+          const result = operation === 'gcd' ? a : (absFirst === 0n || absSecond === 0n ? 0n : absFirst / a * absSecond);
+          showResult('num-output', `${operation.toUpperCase()}(${first}, ${second}) = ${result}`);
+          return;
+        }
+        throw new Error(`Unknown number theory operation: ${operation}`);
+      } catch (error) {
+        showResult('num-output', error.message, true);
+      }
+    }
+
+    function runUnitConversion() {
+      try {
+        const conversion = parseUnitConversion(document.getElementById('unit-query').value);
+        if (!conversion) throw new Error('Use the format “100 km to miles”.');
+        showResult('units-output', `${conversion.value} ${conversion.from} = ${Number(conversion.result.toPrecision(10))} ${conversion.to}`);
+      } catch (error) {
+        showResult('units-output', error.message, true);
+      }
+    }
+  </script>
+</body>
+</html>
