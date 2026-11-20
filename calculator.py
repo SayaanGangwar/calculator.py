@@ -237,3 +237,9 @@ def handle_universal_query(raw_query: str):
         st.subheader("Derivative Results")
         st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
         st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))
+
+st.title ("OmniMath Calculator")
+user_input = st.text_input("Enter a math expression or query (e.g., the derivative of x^3:")
+
+if user input:
+    handle_universal_query(user_input)
