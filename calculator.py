@@ -241,5 +241,5 @@ def handle_universal_query(raw_query: str):
 st.title ("OmniMath Calculator")
 user_input = st.text_input("Enter a math expression or query (e.g., the derivative of x^3:")
 
-if user input:
+if user_input:
     handle_universal_query(user_input)
