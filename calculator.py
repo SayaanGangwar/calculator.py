@@ -200,7 +200,7 @@ def handle_universal_query(raw_query: str):
                 x_center = pts[0][0] if pts else 0.0
                 render_plot(y_exprs, labels, x_center - 10, x_center + 10, pts, "System Intersection")
         
-                     return 
+                      return 
     # 3. Strip conversational prefixes
     cleaned = re.sub(
         r"^(what is|calculate|compute|solve|evaluate|find|simplify)\s+",
@@ -226,7 +226,7 @@ def handle_universal_query(raw_query: str):
             exprs.append(e)
             labels.append(f"y = {e}")
         render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
-        return
+      return
 
     # 5. Calculus: Derivative
     deriv_match = re.match(r"^(?:derivative|differentiate|d/dx)\s+(?:of\s+)?(.+)$", cleaned, flags=re.IGNORECASE)
