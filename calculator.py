@@ -200,7 +200,7 @@ def handle_universal_query(raw_query: str):
                 x_center = pts[0][0] if pts else 0.0
                 render_plot(y_exprs, labels, x_center - 10, x_center + 10, pts, "System Intersection")
         
-                      return 
+        return 
     # 3. Strip conversational prefixes
     cleaned = re.sub(
         r"^(what is|calculate|compute|solve|evaluate|find|simplify)\s+",
