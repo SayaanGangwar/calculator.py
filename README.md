@@ -7,6 +7,7 @@ An interactive, web-based algebra and graphing calculator built with **Python**,
 ## ✨ Features
 
 - **Natural Language & Equation Prompt:** Type plain-English math queries or full equations directly (e.g., `what is (3/4 + 2/5) * sqrt(25)`, `3(x + 2) = 5x - 4`, `factor x^2 - 9`, `derivative of x^3 + 2x`).
+- **AI Math Agent:** Chat about word problems and multi-step math, ask follow-up questions, and send verified results to the grapher or solver. It uses a local SymPy fallback without an API key; optionally configure `GEMINI_API_KEY` or `OPENAI_API_KEY` in the environment or Streamlit secrets, or enter a key in the sidebar.
 - **Clickable Scientific Keypad:** Quick-insert buttons for powers, square roots, fractions, trigonometry, parentheses, and variables.
 - **Exact & Decimal Math:** Preserves exact fractions (`1/3 + 2/5 = 11/15`) and simplified radicals (`sqrt(50) = 5*sqrt(2)`) alongside decimal approximations.
 - **Quadratic Analyzer:** Automatically calculates the discriminant, vertex coordinates, and real or complex roots—and plots the parabola.
@@ -42,6 +43,8 @@ The image scanner also requires the Tesseract OCR system package.
 ```bash
 python -m streamlit run calculator.py
 ```
+The AI Math Agent works without an API key. To enable hosted explanations, set
+`GEMINI_API_KEY` or `OPENAI_API_KEY` in the environment or Streamlit secrets.
 *(If running in **GitHub Codespaces**, click **Open in Browser** when prompted, or open the **Ports** tab and click the globe icon next to port `8501`.)*
 
 ---

@@ -1,9 +1,13 @@
 import ast
-import re
+import json
 import math
+import os
+import re
 import statistics
 from collections import Counter
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
@@ -293,6 +297,511 @@ def parse_homework_expression(text: str):
     if text.startswith("[["):
         return sp.Matrix(ast.literal_eval(text)), "matrix", None
     return sp.simplify(clean_and_parse(text)), "expression", None
+
+
+AI_AGENT_SYSTEM_PROMPT = """You are OmniMath's math tutor. Interpret the user's natural-language
+math question, translate it into exact mathematics, and explain the solution in clear,
+numbered steps. Use LaTeX delimited by $$...$$ for important equations. End every
+solvable math answer with exactly one <sympy>...</sympy> tag. The tag must contain
+only a SymPy-compatible expression, equation, or supported call such as
+diff(x**3 + 2*x, x); never put prose or code in it. For equations, include the
+equation (for example 2*x + 5 = 15), not a guessed solution. Ask a concise follow-up
+question without a tag if essential information is missing. Use earlier turns to
+resolve follow-up references, but do not claim SymPy verified anything yourself."""
+
+AGENT_FUNCTION_NAMES = {
+    "sqrt", "cbrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan",
+    "sinh", "cosh", "tanh", "log", "ln", "exp", "factorial", "gcd", "lcm",
+    "binomial", "Rational", "diff", "differentiate", "derivative", "integrate",
+    "integral", "limit",
+}
+AGENT_ALLOWED_NAMES = set(LOCAL_DICT) | AGENT_FUNCTION_NAMES
+AGENT_AST_NODES = (
+    ast.Expression, ast.Constant, ast.Name, ast.Load, ast.BinOp, ast.UnaryOp,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod, ast.UAdd, ast.USub,
+    ast.Call,
+)
+
+
+def _normalize_agent_expression(text: str) -> str:
+    expression = text.strip().replace("^", "**")
+    expression = re.sub(r"(?<=\d)\s*(?=[A-Za-z(])", "*", expression)
+    expression = re.sub(r"\b([xyztn])\s*(?=\()", r"\1*", expression)
+    expression = re.sub(r"(?<=\))\s*(?=\()", "*", expression)
+    return expression
+
+
+def _validate_agent_expression(text: str):
+    """Reject Python syntax outside the calculator's small math-expression grammar."""
+    expression = _normalize_agent_expression(text)
+    if not expression or not re.fullmatch(r"[A-Za-z0-9_+\-*/^().,\s=]+", expression):
+        raise ValueError("The math expression contains unsupported characters.")
+    if "__" in expression:
+        raise ValueError("The math expression contains an unsupported name.")
+    if "=" in expression:
+        equations = _split_top_level_commas(expression)
+        if len(equations) > 1:
+            if not all("=" in equation for equation in equations):
+                raise ValueError("Every part of a system must be an equation.")
+            for equation in equations:
+                _validate_agent_expression(equation)
+            return
+        sides = expression.split("=")
+        if len(sides) != 2:
+            raise ValueError("Use one equality sign in an equation.")
+        _validate_agent_expression(sides[0])
+        _validate_agent_expression(sides[1])
+        return
+
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError("The SymPy expression is not valid math syntax.") from exc
+    for node in ast.walk(tree):
+        if not isinstance(node, AGENT_AST_NODES):
+            raise ValueError("The math expression contains unsupported syntax.")
+        if isinstance(node, ast.Name) and node.id not in AGENT_ALLOWED_NAMES:
+            raise ValueError(f"Unsupported math name: {node.id}")
+        if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
+            raise ValueError("Only numeric constants are supported.")
+        if isinstance(node, ast.Call):
+            if (
+                not isinstance(node.func, ast.Name)
+                or node.func.id not in AGENT_FUNCTION_NAMES
+                or node.keywords
+            ):
+                raise ValueError("Only supported SymPy math functions may be called.")
+
+
+def _evaluate_agent_expression(expression_text: str):
+    _validate_agent_expression(expression_text)
+    expression_text = _normalize_agent_expression(expression_text)
+    calculus_result = _parse_calculus_call(expression_text)
+    if calculus_result:
+        return calculus_result[0], calculus_result[1], calculus_result[2]
+    return parse_homework_expression(expression_text)
+
+
+def _agent_result_latex(value) -> str:
+    if isinstance(value, (list, tuple)):
+        solutions = []
+        for solution in value:
+            if isinstance(solution, dict):
+                assignments = [
+                    f"{sp.latex(variable)}={sp.latex(result)}"
+                    for variable, result in solution.items()
+                ]
+                solutions.append(r"\,".join(assignments))
+            else:
+                solutions.append(sp.latex(solution))
+        return r"\left\{" + r";\ ".join(solutions) + r"\right\}"
+    return sp.latex(value)
+
+
+def _agent_sympy_result(expression_text: str):
+    value, operation, source = _evaluate_agent_expression(expression_text)
+    return value, operation, source
+
+
+def _agent_solution_steps(expression_text: str, value, operation: str, source):
+    if operation == "derivative":
+        return [
+            f"Start with \\(f(x) = {sp.latex(source)}\\).",
+            "Apply the appropriate differentiation rule term by term.",
+            f"Differentiate with SymPy: \\(f'(x) = {sp.latex(value)}\\).",
+        ]
+    if operation == "integral":
+        return [
+            f"Integrate \\({sp.latex(source)}\\) with respect to \\(x\\).",
+            f"SymPy returns the antiderivative \\({sp.latex(value)}\\); add a constant \\(C\\).",
+        ]
+    if operation == "equation":
+        match = re.fullmatch(r"(.+?)\s*=\s*(.+)", expression_text)
+        if match:
+            left = clean_and_parse(_normalize_agent_expression(match.group(1)))
+            right = clean_and_parse(_normalize_agent_expression(match.group(2)))
+            equation = sp.expand(left - right)
+            variables = sorted(equation.free_symbols, key=str)
+            if len(variables) == 1:
+                variable = variables[0]
+                try:
+                    degree = sp.Poly(equation, variable).degree()
+                except sp.PolynomialError:
+                    degree = None
+                if degree == 1:
+                    coefficient = sp.diff(equation, variable)
+                    constant = equation.subs(variable, 0)
+                    steps = [f"Start with \\({sp.latex(left)} = {sp.latex(right)}\\)."]
+                    if constant != 0:
+                        steps.append(
+                            f"Move the constant term: \\({sp.latex(coefficient * variable)} = "
+                            f"{sp.latex(-constant)}\\)."
+                        )
+                    if coefficient not in (1, -1):
+                        steps.append(
+                            f"Divide both sides by \\({sp.latex(coefficient)}\\) to isolate "
+                            f"\\({sp.latex(variable)}\\)."
+                        )
+                    if value:
+                        steps.append(
+                            f"SymPy verifies \\({sp.latex(variable)} = "
+                            f"{sp.latex(value[0][variable])}\\)."
+                        )
+                    else:
+                        steps.append("SymPy found no isolated solution for this equation.")
+                    return steps
+        return [f"SymPy solves the equation exactly: \\({ _agent_result_latex(value) }\\)."]
+    if operation == "expression":
+        return [
+            f"Translate the prompt into \\({sp.latex(source) if source is not None else expression_text}\\).",
+            f"Evaluate and simplify with SymPy: \\({sp.latex(value)}\\).",
+        ]
+    if operation == "limit":
+        return [f"Evaluate the requested limit exactly: \\({sp.latex(value)}\\)."]
+    return [f"SymPy evaluated the translated math exactly: \\({ _agent_result_latex(value) }\\)."]
+
+
+def _configured_agent_api_key():
+    for provider, name in (("gemini", "GEMINI_API_KEY"), ("openai", "OPENAI_API_KEY")):
+        key = os.environ.get(name)
+        if key:
+            return provider, key
+    try:
+        for provider, name in (("gemini", "GEMINI_API_KEY"), ("openai", "OPENAI_API_KEY")):
+            key = st.secrets.get(name)
+            if key:
+                return provider, str(key)
+    except FileNotFoundError:
+        pass
+    return None, None
+
+
+def _agent_api_configuration():
+    provider, key = _configured_agent_api_key()
+    if key:
+        return provider, key
+    user_key = st.session_state.get("ai_agent_api_key", "").strip()
+    if user_key:
+        return st.session_state.get("ai_agent_provider", "gemini"), user_key
+    return None, None
+
+
+def _request_agent_completion(provider: str, api_key: str, conversation):
+    if provider == "openai":
+        body = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": AI_AGENT_SYSTEM_PROMPT},
+                *[
+                    {
+                        "role": "assistant" if message["role"] == "assistant" else "user",
+                        "content": message["content"],
+                    }
+                    for message in conversation
+                ],
+            ],
+        }
+        request = Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+    else:
+        body = {
+            "systemInstruction": {"parts": [{"text": AI_AGENT_SYSTEM_PROMPT}]},
+            "contents": [
+                {
+                    "role": "model" if message["role"] == "assistant" else "user",
+                    "parts": [{"text": message["content"]}],
+                }
+                for message in conversation
+            ],
+            "generationConfig": {"temperature": 0.1},
+        }
+        request = Request(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"{provider.title()} API returned HTTP {exc.code}: {details}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Could not reach the {provider.title()} API: {exc}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"The {provider.title()} API returned an invalid response.") from exc
+
+    try:
+        if provider == "openai":
+            return payload["choices"][0]["message"]["content"]
+        return payload["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"The {provider.title()} API response did not contain a message.") from exc
+
+
+def _translate_linear_word_problem(prompt: str):
+    if not re.search(r"\b(?:number|unknown|x)\b", prompt, re.IGNORECASE):
+        return None
+    translated = prompt.lower().strip().rstrip("?.!")
+    translated = re.sub(
+        r"\b(\d+(?:\.\d+)?)\s+less than\s+(?:a|the|some)\s+number\b",
+        r"x - \1",
+        translated,
+    )
+    translated = re.sub(r"\b(?:twice|double)\s+(?:a|the|some)\s+number\b", "2*x", translated)
+    translated = re.sub(r"\b(?:three times|triple)\s+(?:a|the|some)\s+number\b", "3*x", translated)
+    translated = re.sub(r"\b(?:a|the|some)\s+number\b", "x", translated)
+    translated = re.sub(r"\b(?:plus|added to)\b", "+", translated)
+    translated = re.sub(r"\bminus\b", "-", translated)
+    translated = re.sub(r"\b(?:times|multiplied by)\b", "*", translated)
+    translated = re.sub(r"\bdivided by\b", "/", translated)
+    translated = re.sub(r"\b(?:equals|is|was)\b", "=", translated)
+    translated = re.sub(r"\b(?:find|solve|what is|the value of|when)\b", " ", translated)
+    translated = re.sub(r"\s+", " ", translated).strip()
+    if "=" not in translated or re.search(r"[a-wyz]", translated):
+        return None
+    try:
+        _validate_agent_expression(translated)
+    except ValueError:
+        return None
+    return translated
+
+
+def _local_agent_response(prompt: str, conversation):
+    normalized = prompt.strip().rstrip("?")
+    prior_expression = next(
+        (
+            message.get("graph_expression")
+            for message in reversed(conversation)
+            if message["role"] == "assistant" and message.get("graph_expression")
+        ),
+        None,
+    )
+    if re.search(r"\b(?:why|explain)\b", normalized, re.IGNORECASE):
+        if re.search(r"\bdivide|divided\b", normalized, re.IGNORECASE):
+            previous_equation = next(
+                (
+                    message.get("send_expression")
+                    for message in reversed(conversation)
+                    if message["role"] == "assistant"
+                    and message.get("send_expression")
+                    and "=" in message["send_expression"]
+                ),
+                None,
+            )
+            if previous_equation:
+                _validate_agent_expression(previous_equation)
+                left_text, right_text = previous_equation.split("=", 1)
+                left = clean_and_parse(_normalize_agent_expression(left_text))
+                right = clean_and_parse(_normalize_agent_expression(right_text))
+                equation = sp.expand(left - right)
+                variables = sorted(equation.free_symbols, key=str)
+                if len(variables) == 1:
+                    variable = variables[0]
+                    coefficient = sp.diff(equation, variable)
+                    constant = equation.subs(variable, 0)
+                    if (
+                        not coefficient.free_symbols
+                        and coefficient not in (1, -1, 0)
+                    ):
+                        return (
+                            f"After moving the constant term, the equation becomes "
+                            f"\\({sp.latex(coefficient * variable)} = "
+                            f"{sp.latex(-constant)}\\). Since \\({variable}\\) is "
+                            f"multiplied by \\({sp.latex(coefficient)}\\), divide both "
+                            f"sides by \\({sp.latex(coefficient)}\\) to isolate it.",
+                            None,
+                            None,
+                        )
+            return (
+                "We divide by the coefficient of the variable after moving the constant "
+                "term. That isolates the variable while keeping the equation balanced.",
+                None,
+                None,
+            )
+        return (
+            "I used SymPy to verify the previous result. Ask about a specific step (for "
+            "example, “Why did you divide by 2?”) and I can explain the rule used.",
+            None,
+            None,
+        )
+
+    graph_request = re.search(r"\b(?:graph|plot|grapher|graphing)\b", normalized, re.IGNORECASE)
+    if graph_request:
+        expression_text = prior_expression
+        if not expression_text:
+            expression_text = re.sub(
+                r"^\s*(?:please\s+)?(?:graph|plot)\s+", "", normalized, flags=re.IGNORECASE
+            )
+            expression_text = re.sub(
+                r"\s+from\s+.+$", "", expression_text, flags=re.IGNORECASE
+            )
+        if expression_text:
+            value = _agent_sympy_result(expression_text)[0]
+            if not isinstance(value, sp.Expr):
+                value = sp.sympify(value)
+            return (
+                f"Using the function \\({sp.latex(value)}\\) from the conversation. "
+                "SymPy parsed it successfully; use the button below to open it in the grapher.",
+                "graph",
+                sp.sstr(value),
+            )
+        return (
+            "I couldn't find a function to graph. Give me an expression, for example "
+            "“graph x^2 + 1,” or solve a function first.",
+            None,
+            None,
+        )
+
+    circle = re.search(
+        r"\barea\s+of\s+(?:a\s+)?circle\s+(?:with\s+)?radius\s+([0-9.]+)\b",
+        normalized,
+        re.IGNORECASE,
+    )
+    if circle:
+        radius = clean_and_parse(circle.group(1))
+        value = sp.simplify(sp.pi * radius**2)
+        display = (
+            f"1. Use the circle area formula: \\(A = \\pi r^2\\).\n\n"
+            f"2. Substitute \\(r = {sp.latex(radius)}\\): "
+            f"\\(A = \\pi \\cdot {sp.latex(radius)}^2\\).\n\n"
+            f"3. **SymPy-verified result:** $$A = {sp.latex(value)}$$"
+        )
+        return display, "solver", sp.sstr(value)
+
+    equation_text = _translate_linear_word_problem(normalized)
+    if equation_text is None:
+        equation_text = normalized
+        equation_text = re.sub(
+            r"^\s*(?:what is|calculate|compute|find|solve|evaluate)\s+",
+            "",
+            equation_text,
+            flags=re.IGNORECASE,
+        )
+        if re.search(r"\b(?:derivative|differentiate|d/dx)\b", equation_text, re.IGNORECASE):
+            equation_text = re.sub(
+                r"^\s*(?:the\s+)?(?:derivative|differentiate|d/dx)(?:\s+of)?\s+",
+                "diff(",
+                equation_text,
+                flags=re.IGNORECASE,
+            )
+            equation_text = equation_text.rstrip(")") + ", x)"
+    value, operation, source = _agent_sympy_result(equation_text)
+    steps = _agent_solution_steps(equation_text, value, operation, source)
+    answer_text = "\n\n".join(
+        f"{index}. {step}" for index, step in enumerate(steps, 1)
+    )
+    answer_text += f"\n\n**SymPy-verified result:** $$ { _agent_result_latex(value) } $$"
+    graph_expression = None
+    if isinstance(value, sp.Expr) and value.free_symbols <= {x, y}:
+        graph_expression = sp.sstr(value)
+    send_expression = graph_expression or equation_text
+    target = "graph" if graph_expression else "solver"
+    return answer_text, target, send_expression
+
+
+def _generate_agent_response(prompt: str, conversation):
+    provider, api_key = _agent_api_configuration()
+    if not api_key:
+        answer, target, send_expression = _local_agent_response(prompt, conversation)
+        return answer, target, send_expression, "Local SymPy"
+
+    raw_response = _request_agent_completion(provider, api_key, conversation)
+    match = re.search(r"<sympy>\s*(.*?)\s*</sympy>", raw_response, re.IGNORECASE | re.DOTALL)
+    response_text = re.sub(
+        r"\s*<sympy>.*?</sympy>\s*",
+        "",
+        raw_response,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    if not match:
+        response_text += "\n\n*No SymPy expression was provided for verification.*"
+        return response_text, None, None, provider.title()
+    expression_text = match.group(1).strip()
+    value = _agent_sympy_result(expression_text)[0]
+    response_text += (
+        f"\n\n**SymPy-verified result:** $$ { _agent_result_latex(value) } $$"
+    )
+    graph_expression = (
+        sp.sstr(value)
+        if isinstance(value, sp.Expr) and value.free_symbols <= {x, y}
+        else None
+    )
+    target = "graph" if graph_expression else "solver"
+    send_expression = graph_expression or expression_text
+    return response_text, target, send_expression, provider.title()
+
+
+def _send_agent_expression(expression: str, target: str):
+    if target == "graph":
+        st.session_state["surface_expression"] = expression
+        st.session_state["active_tab"] = "3D Surface Grapher"
+    else:
+        st.session_state["query_input"] = expression
+        st.session_state["active_tab"] = "OmniMath Solver"
+
+
+def render_ai_math_agent():
+    st.subheader("AI Math Agent")
+    st.caption(
+        "Ask a math question or word problem, then continue with follow-ups. "
+        "Every parsed result is evaluated by SymPy."
+    )
+    conversation = st.session_state.setdefault("ai_chat", [])
+    for index, message in enumerate(conversation):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message.get("send_expression"):
+                st.button(
+                    "Send to Grapher / Solver",
+                    key=f"ai_send_expression_{index}",
+                    on_click=_send_agent_expression,
+                    args=(message["send_expression"], message["target"]),
+                )
+    prompt = st.chat_input("Ask a math question or follow up...", key="ai_chat_input")
+    if not prompt:
+        return
+    conversation.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    try:
+        answer, target, send_expression, mode = _generate_agent_response(
+            prompt, conversation
+        )
+    except (RuntimeError, ValueError, TypeError, SyntaxError, NameError, ZeroDivisionError) as exc:
+        answer = f"I couldn't solve that request: {exc}"
+        target = send_expression = None
+        mode = "SymPy"
+    st.session_state["ai_chat"].append(
+        {
+            "role": "assistant",
+            "content": answer,
+            "send_expression": send_expression,
+            "target": target,
+            "graph_expression": (
+                send_expression if target == "graph" else None
+            ),
+            "mode": mode,
+        }
+    )
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+        st.caption(f"Answered with {mode}.")
+        if send_expression:
+            st.button(
+                "Send to Grapher / Solver",
+                key=f"ai_send_expression_{len(conversation) - 1}",
+                on_click=_send_agent_expression,
+                args=(send_expression, target),
+            )
 
 
 def _parse_homework_attempt(text: str):
@@ -2679,6 +3188,29 @@ themes = {
 }
 selected_theme = st.sidebar.selectbox("Color theme", list(themes))
 theme_colors = themes[selected_theme]
+configured_agent_provider, configured_agent_key = _configured_agent_api_key()
+if configured_agent_key:
+    st.sidebar.caption(
+        f"AI Math Agent API key detected ({configured_agent_provider.title()})."
+    )
+else:
+    with st.sidebar.expander("AI Math Agent API key"):
+        st.selectbox(
+            "Provider",
+            ["Gemini", "OpenAI"],
+            key="ai_agent_provider_choice",
+        )
+        st.session_state["ai_agent_provider"] = (
+            "gemini"
+            if st.session_state["ai_agent_provider_choice"] == "Gemini"
+            else "openai"
+        )
+        st.text_input(
+            "Optional API key",
+            type="password",
+            key="ai_agent_api_key",
+            help="Leave blank to use the local SymPy math agent.",
+        )
 st.markdown(
     f"""
     <style>
@@ -2756,11 +3288,12 @@ for category, examples in reference_categories.items():
                 args=(query,),
             )
 
-solver_tab, surface_tab, simulators_tab = st.tabs(
+solver_tab, surface_tab, simulators_tab, ai_agent_tab = st.tabs(
     [
         "OmniMath Solver",
         "3D Surface Grapher",
         "Physics & Engineering Simulators",
+        "AI Math Agent",
     ],
     key="active_tab",
     bind="query-params",
@@ -2841,6 +3374,10 @@ if simulators_tab.open:
             render_oscillator_simulator()
         else:
             render_circuit_simulator()
+
+if ai_agent_tab.open:
+    with ai_agent_tab:
+        render_ai_math_agent()
 
 sync_shareable_state()
 with st.sidebar.expander("Shareable problem link"):
