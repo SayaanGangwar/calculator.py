@@ -266,7 +266,7 @@ if re.match(r"^expand\b", cleaned, re.I):
         st.latex(sp.latex(expr) + " = " + sp.latex(sp.expand(expr)))
         return
 
-    # 5. Calculus: Derivative
+     # 5. Calculus: Derivative
     deriv_match = re.match(r"^(?:derivative|differentiate|d/dx)\s+(?:of\s+)?(.+)$", cleaned, flags=re.IGNORECASE)
     if deriv_match:
         expr = clean_and_parse(deriv_match.group(1))
