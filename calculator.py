@@ -3,6 +3,7 @@ import re
 import math
 import statistics
 from collections import Counter
+from urllib.parse import urlencode
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
@@ -48,16 +49,19 @@ LOCAL_DICT = {
 }
 
 
-def clean_and_parse(expr_str: str):
+def clean_and_parse(expr_str: str, local_dict=None):
     """Parses user string into an exact SymPy expression."""
     expr_str = expr_str.strip()
     # Convert standalone integer fractions like 1/3 -> Rational(1, 3)
     expr_str = re.sub(
-        r"(?<![.\w])(\d+)\s*/\s*(\d+)(?![.\w])",
+        r"(?<![.\w^])(?<!\*\*)(\d+)\s*/\s*(\d+)(?![.\w])",
         r"Rational(\1, \2)",
         expr_str,
     )
-    return parse_expr(expr_str, local_dict=LOCAL_DICT, transformations=TRANSFORMATIONS)
+    parse_locals = {**LOCAL_DICT, **(local_dict or {})}
+    return parse_expr(
+        expr_str, local_dict=parse_locals, transformations=TRANSFORMATIONS
+    )
 
 
 def show_steps(title: str, steps):
@@ -127,6 +131,160 @@ def solution_report_markdown(report):
     return "\n".join(lines)
 
 
+def evaluate_notebook(source: str):
+    """Evaluate scratchpad lines in order, preserving earlier assignments."""
+    variables = {}
+    results = []
+    for line_number, raw_line in enumerate(source.splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        assignment = re.fullmatch(r"([A-Za-z_]\w*)\s*=\s*(.+)", line)
+        try:
+            if assignment:
+                name, expression_text = assignment.groups()
+                expression = clean_and_parse(expression_text, variables)
+                variables[name] = expression
+                result_text = f"{name} = {sp.latex(expression)}"
+            else:
+                expression = clean_and_parse(line, variables)
+                result_text = sp.latex(expression)
+            results.append(
+                {"line_number": line_number, "input": line, "result": result_text}
+            )
+        except (SyntaxError, TypeError, ValueError, NameError, ZeroDivisionError) as exc:
+            results.append(
+                {
+                    "line_number": line_number,
+                    "input": line,
+                    "error": str(exc) or "Could not parse this line.",
+                }
+            )
+    return results
+
+
+def parse_homework_expression(text: str):
+    """Parse an expression, equation, or supported calculus prompt."""
+    text = text.strip()
+    integration = re.match(
+        r"^(?:integrate|integral|antiderivative)(?:\s+of)?\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    differentiation = re.match(
+        r"^(?:differentiate|derivative)(?:\s+of)?\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if integration:
+        source = clean_and_parse(integration.group(1))
+        return sp.integrate(source, x), "integral", source
+    if differentiation:
+        source = clean_and_parse(differentiation.group(1))
+        return sp.diff(source, x), "derivative", source
+    if "=" in text:
+        lhs_text, rhs_text = text.split("=", 1)
+        return clean_and_parse(lhs_text) - clean_and_parse(rhs_text), "equation", None
+    return clean_and_parse(text), "expression", None
+
+
+def expressions_equivalent(first, second, *, equations=False):
+    if sp.simplify(first - second) == 0:
+        return True
+    if not equations:
+        return False
+    if sp.simplify(first + second) == 0:
+        return True
+    if second == 0:
+        return False
+    ratio = sp.simplify(first / second)
+    return not ratio.free_symbols and ratio != 0 and ratio.is_finite is True
+
+
+def check_homework(original: str, attempt: str):
+    """Compare a submitted answer and return a status with focused feedback."""
+    parse_locals = {"C": sp.Symbol("C")}
+    expected, operation, source = parse_homework_expression(original)
+    if "=" in attempt:
+        lhs_text, rhs_text = attempt.split("=", 1)
+        submitted = clean_and_parse(
+            lhs_text, parse_locals
+        ) - clean_and_parse(rhs_text, parse_locals)
+    else:
+        submitted = clean_and_parse(attempt, parse_locals)
+    equation = operation == "equation"
+    if operation == "integral":
+        if sp.simplify(sp.diff(submitted, x) - source) == 0:
+            if sp.Symbol("C") not in submitted.free_symbols:
+                return (
+                    "almost",
+                    "This is an antiderivative, but an indefinite integral needs "
+                    "the constant of integration: add `+ C`.",
+                )
+            return "correct", "Correct antiderivative, including the constant of integration."
+    if expressions_equivalent(expected, submitted, equations=equation):
+        return "correct", "Equivalent expressions."
+
+    if sp.simplify(expected + submitted) == 0:
+        return "incorrect", "This is a sign error: your answer is the negative of the expected result."
+
+    if operation in {"integral", "derivative"} and (
+        expected.has(sp.Pow) or submitted.has(sp.Pow)
+    ):
+        feedback = (
+            "Check the power rule: for x^m, differentiation gives m*x^(m-1); "
+            "integration gives x^(m+1)/(m+1) when m != -1."
+        )
+    elif any(
+        expr.has(sp.sin, sp.cos, sp.tan)
+        for expr in (expected, submitted)
+    ):
+        feedback = (
+            "Check the angle units: SymPy interprets trigonometric inputs in "
+            "radians. Convert degree values to radians before evaluating."
+        )
+    else:
+        feedback = (
+            "The expressions are not equivalent. Recheck the algebra and each "
+            "transformation."
+        )
+    return "incorrect", feedback
+
+
+def study_sheet_markdown(reports):
+    lines = ["# OmniMath Study Sheet", ""]
+    for index, report in enumerate(reports, 1):
+        answer = report["answer"]
+        if "\n" in answer or (
+            re.search(r"[A-Za-z]", answer)
+            and not re.search(r"\\[A-Za-z]+", answer)
+            and re.search(r"[A-Za-z]{3,}", answer)
+        ):
+            formatted_answer = f"```text\n{answer}\n```"
+        else:
+            formatted_answer = f"$$\n{answer}\n$$"
+        lines.extend(
+            [
+                f"## Problem {index}: {report['query']}",
+                "",
+                "### Final answer",
+                "",
+                formatted_answer,
+                "",
+                "### Step-by-step solution",
+            ]
+        )
+        if report["steps"]:
+            lines.extend(
+                f"{step_index}. {step}"
+                for step_index, step in enumerate(report["steps"], 1)
+            )
+        else:
+            lines.append("No step-by-step explanation is available for this result.")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def handle_universal_query(raw_query: str):
     query = raw_query.strip()
     if not query:
@@ -134,14 +292,22 @@ def handle_universal_query(raw_query: str):
 
     capture = {"query": query, "answer": "", "steps": []}
     st.session_state["_solution_capture"] = capture
-    _handle_universal_query(raw_query)
-    st.session_state.pop("_solution_capture", None)
+    try:
+        _handle_universal_query(raw_query)
+    finally:
+        st.session_state.pop("_solution_capture", None)
 
     if not capture["answer"]:
         st.session_state["solution_report"] = None
         return
 
     st.session_state["solution_report"] = capture
+    history = st.session_state.setdefault("calculation_history", [])
+    if not any(
+        item["query"] == capture["query"] and item["answer"] == capture["answer"]
+        for item in history
+    ):
+        history.append(dict(capture))
     st.download_button(
         "Download solution (.txt)",
         solution_report_text(capture),
@@ -310,18 +476,200 @@ def render_plot(expressions, labels, x_min=-10.0, x_max=10.0, points=None, title
     plt.close(fig)
 
 
+def _real_numeric_value(value):
+    evaluated = complex(sp.N(value))
+    if abs(evaluated.imag) > 1e-10 or not math.isfinite(evaluated.real):
+        raise ValueError("The expression must evaluate to finite real values.")
+    return float(evaluated.real)
+
+
+def _evaluate_real_function(expression, values):
+    function = sp.lambdify(x, expression, modules=["numpy"])
+    with np.errstate(all="ignore"):
+        result = np.asarray(function(values))
+    if np.iscomplexobj(result):
+        if np.any(np.abs(np.imag(result)) > 1e-10):
+            raise ValueError("The function has non-real values in the selected range.")
+        result = np.real(result)
+    if result.ndim == 0:
+        result = np.full_like(values, float(result), dtype=float)
+    else:
+        result = np.broadcast_to(result, values.shape).astype(float)
+    return np.where(np.isfinite(result), result, np.nan)
+
+
+def render_riemann_visualizer():
+    st.subheader("Riemann Sum Visualizer")
+    expression_text = st.text_input(
+        "Function f(x)",
+        value="x^2",
+        key="riemann_expression",
+    )
+    columns = st.columns(2)
+    with columns[0]:
+        lower_text = st.text_input("Lower bound a", value="0", key="riemann_lower")
+    with columns[1]:
+        upper_text = st.text_input("Upper bound b", value="3", key="riemann_upper")
+    method = st.selectbox(
+        "Rectangle sample point",
+        ["Left", "Right", "Midpoint"],
+        key="riemann_method",
+    )
+    rectangle_count = st.slider(
+        "Number of rectangles (n)",
+        min_value=2,
+        max_value=100,
+        value=12,
+        key="riemann_n",
+    )
+
+    try:
+        expression = clean_and_parse(expression_text)
+        if expression.free_symbols - {x}:
+            raise ValueError("Use x as the only variable in f(x).")
+        lower = _real_numeric_value(clean_and_parse(lower_text))
+        upper = _real_numeric_value(clean_and_parse(upper_text))
+        if upper <= lower:
+            raise ValueError("The upper bound must be greater than the lower bound.")
+
+        width = (upper - lower) / rectangle_count
+        left_edges = lower + np.arange(rectangle_count) * width
+        if method == "Left":
+            samples = left_edges
+            centers = left_edges + width / 2
+        elif method == "Right":
+            samples = left_edges + width
+            centers = left_edges + width / 2
+        else:
+            samples = left_edges + width / 2
+            centers = samples
+
+        heights = _evaluate_real_function(expression, samples)
+        if not np.all(np.isfinite(heights)):
+            raise ValueError("The function is undefined at one or more rectangle sample points.")
+        approximation = float(np.sum(heights) * width)
+        exact_value = None
+        exact_integral = sp.integrate(expression, (x, lower, upper))
+        try:
+            exact_value = _real_numeric_value(exact_integral)
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+        curve_x = np.linspace(lower, upper, 600)
+        curve_y = _evaluate_real_function(expression, curve_x)
+        figure = go.Figure()
+        figure.add_trace(
+            go.Bar(
+                x=centers,
+                y=heights,
+                width=width,
+                base=0,
+                name=f"{method} rectangles",
+                opacity=0.38,
+                marker_line={"color": theme_colors["accent"], "width": 1},
+            )
+        )
+        figure.add_trace(
+            go.Scatter(x=curve_x, y=curve_y, mode="lines", name="f(x)")
+        )
+        figure.update_layout(
+            title=f"{method} Riemann sum (n = {rectangle_count})",
+            xaxis_title="x",
+            yaxis_title="f(x)",
+            barmode="overlay",
+            legend={"orientation": "h"},
+        )
+        st.plotly_chart(figure, width="stretch", key="riemann_plot")
+        metric_columns = st.columns(2)
+        metric_columns[0].metric("Riemann sum", f"{approximation:.8g}")
+        if exact_value is not None:
+            metric_columns[1].metric("Exact definite integral", f"{exact_value:.8g}")
+        else:
+            metric_columns[1].metric("Exact definite integral", "Not available")
+    except (SyntaxError, TypeError, ValueError, NameError, ZeroDivisionError) as exc:
+        st.error(f"Could not build the Riemann sum: {exc}")
+
+
+def render_taylor_visualizer():
+    st.subheader("Taylor Series Approximator")
+    expression_text = st.text_input(
+        "Function f(x)",
+        value="sin(x)",
+        key="taylor_expression",
+    )
+    columns = st.columns(3)
+    with columns[0]:
+        center_text = st.text_input("Center a", value="0", key="taylor_center")
+    with columns[1]:
+        degree = st.slider(
+            "Taylor polynomial degree",
+            min_value=0,
+            max_value=12,
+            value=4,
+            key="taylor_degree",
+        )
+    with columns[2]:
+        span = st.slider(
+            "Plot half-width",
+            min_value=1.0,
+            max_value=10.0,
+            value=5.0,
+            step=0.5,
+            key="taylor_span",
+        )
+
+    try:
+        expression = clean_and_parse(expression_text)
+        if expression.free_symbols - {x}:
+            raise ValueError("Use x as the only variable in f(x).")
+        center_expr = clean_and_parse(center_text)
+        if center_expr.free_symbols:
+            raise ValueError("The Taylor center must be a numeric value.")
+        center = _real_numeric_value(center_expr)
+        polynomial = sp.series(
+            expression, x, center_expr, degree + 1
+        ).removeO()
+        plot_x = np.linspace(center - span, center + span, 600)
+        function_y = _evaluate_real_function(expression, plot_x)
+        polynomial_y = _evaluate_real_function(polynomial, plot_x)
+        figure = go.Figure()
+        figure.add_trace(
+            go.Scatter(x=plot_x, y=function_y, mode="lines", name="f(x)")
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=plot_x,
+                y=polynomial_y,
+                mode="lines",
+                name=f"Degree {degree} Taylor polynomial",
+                line={"dash": "dash"},
+            )
+        )
+        figure.add_vline(
+            x=center, line_dash="dot", line_color=theme_colors["accent"]
+        )
+        figure.update_layout(
+            title=f"Taylor approximation around x = {center:g}",
+            xaxis_title="x",
+            yaxis_title="y",
+            legend={"orientation": "h"},
+        )
+        st.plotly_chart(figure, width="stretch", key="taylor_plot")
+        st.latex(r"T_{" + str(degree) + r"}(x) = " + sp.latex(polynomial))
+    except (SyntaxError, TypeError, ValueError, NameError, ZeroDivisionError) as exc:
+        st.error(f"Could not build the Taylor approximation: {exc}")
+
+
 def render_surface_grapher():
     st.subheader("Interactive 3D Surface")
     expression_text = st.text_input(
         "Enter z = f(x, y)",
-        value="sin(sqrt(x^2 + y^2))",
         key="surface_expression",
     )
     x_range = st.slider(
         "x range",
         min_value=-10.0,
         max_value=10.0,
-        value=(-5.0, 5.0),
         step=0.5,
         key="surface_x_range",
     )
@@ -329,7 +677,6 @@ def render_surface_grapher():
         "y range",
         min_value=-10.0,
         max_value=10.0,
-        value=(-5.0, 5.0),
         step=0.5,
         key="surface_y_range",
     )
@@ -441,7 +788,6 @@ def render_projectile_simulator():
         "Launch velocity (m/s)",
         min_value=1.0,
         max_value=100.0,
-        value=50.0,
         step=1.0,
         key="projectile_velocity",
     )
@@ -449,7 +795,6 @@ def render_projectile_simulator():
         "Launch angle (degrees)",
         min_value=0.0,
         max_value=90.0,
-        value=45.0,
         step=1.0,
         key="projectile_angle",
     )
@@ -457,7 +802,6 @@ def render_projectile_simulator():
         "Gravity (m/s²)",
         min_value=1.0,
         max_value=20.0,
-        value=9.8,
         step=0.1,
         key="projectile_gravity",
     )
@@ -465,7 +809,6 @@ def render_projectile_simulator():
         "Normalized quadratic drag coefficient (1/m)",
         min_value=0.0,
         max_value=0.2,
-        value=0.02,
         step=0.005,
         key="projectile_drag",
     )
@@ -523,7 +866,6 @@ def render_oscillator_simulator():
         "Mass, m (kg)",
         min_value=0.1,
         max_value=10.0,
-        value=1.0,
         step=0.1,
         key="oscillator_mass",
     )
@@ -531,7 +873,6 @@ def render_oscillator_simulator():
         "Spring constant, k (N/m)",
         min_value=0.1,
         max_value=50.0,
-        value=20.0,
         step=0.1,
         key="oscillator_spring",
     )
@@ -539,7 +880,6 @@ def render_oscillator_simulator():
         "Damping coefficient, c (N·s/m)",
         min_value=0.0,
         max_value=20.0,
-        value=2.0,
         step=0.1,
         key="oscillator_damping",
     )
@@ -607,7 +947,6 @@ def render_circuit_simulator():
         "Resistance, R (Ω)",
         min_value=1.0,
         max_value=1000.0,
-        value=100.0,
         step=1.0,
         key="circuit_resistance",
     )
@@ -615,7 +954,6 @@ def render_circuit_simulator():
         "Inductance, L (H; set to 0 for an RC circuit)",
         min_value=0.0,
         max_value=5.0,
-        value=0.1,
         step=0.01,
         key="circuit_inductance",
     )
@@ -623,7 +961,6 @@ def render_circuit_simulator():
         "Capacitance, C (F)",
         min_value=0.0001,
         max_value=0.01,
-        value=0.001,
         step=0.0001,
         format="%.4f",
         key="circuit_capacitance",
@@ -632,7 +969,6 @@ def render_circuit_simulator():
         "Input voltage (V)",
         min_value=1.0,
         max_value=240.0,
-        value=12.0,
         step=1.0,
         key="circuit_voltage",
     )
@@ -1301,6 +1637,288 @@ def extract_math_text(image_file):
     st.success("Text extracted. Review or edit it in the query box below.")
 
 
+def _query_value(query_name):
+    value = st.query_params.get(query_name)
+    return value if isinstance(value, str) else None
+
+
+def _seed_query_widget(
+    state_key, query_name, parser, default, previous_query
+):
+    raw_value = _query_value(query_name)
+    if (
+        state_key in st.session_state
+        and raw_value == previous_query.get(query_name)
+    ):
+        return None
+    if raw_value is None:
+        if query_name in previous_query:
+            st.session_state[state_key] = default
+        return None
+    try:
+        st.session_state[state_key] = parser(raw_value)
+    except (TypeError, ValueError):
+        st.session_state[state_key] = default
+        return query_name
+    return None
+
+
+def initialize_shareable_state():
+    invalid_parameters = []
+
+    def choice_parser(choices):
+        def parse(value):
+            if value not in choices:
+                raise ValueError(f"Expected one of {sorted(choices)}")
+            return value
+
+        return parse
+
+    parsers = {
+        "query_input": ("q", lambda value: value),
+        "surface_expression": ("fx", lambda value: value),
+        "surface_colorscale": (
+            "cs",
+            choice_parser({"Viridis", "Plasma", "Inferno", "Cividis"}),
+        ),
+        "physics_simulator": (
+            "sim",
+            choice_parser(
+                {
+                    "Projectile Motion with Air Drag",
+                    "Damped Harmonic Oscillator",
+                    "RC / RLC Circuit Transient Response",
+                }
+            ),
+        ),
+    }
+
+    def bounded_float(minimum, maximum):
+        def parse(value):
+            number = float(value)
+            if not minimum <= number <= maximum:
+                raise ValueError("Value outside widget range")
+            return number
+
+        return parse
+
+    def bounded_range(value):
+        parts = [float(part) for part in value.split(",")]
+        if (
+            len(parts) != 2
+            or not -10 <= parts[0] < parts[1] <= 10
+        ):
+            raise ValueError("Range outside widget limits")
+        return tuple(parts)
+
+    parsers.update(
+        {
+            "surface_x_range": ("xr", bounded_range),
+            "surface_y_range": ("yr", bounded_range),
+            "projectile_velocity": ("v", bounded_float(1, 100)),
+            "projectile_angle": ("angle", bounded_float(0, 90)),
+            "projectile_gravity": ("g", bounded_float(1, 20)),
+            "projectile_drag": ("drag", bounded_float(0, 0.2)),
+            "oscillator_mass": ("mass", bounded_float(0.1, 10)),
+            "oscillator_spring": ("spring", bounded_float(0.1, 50)),
+            "oscillator_damping": ("damping", bounded_float(0, 20)),
+            "circuit_resistance": ("resistance", bounded_float(1, 1000)),
+            "circuit_inductance": ("inductance", bounded_float(0, 5)),
+            "circuit_capacitance": ("capacitance", bounded_float(0.0001, 0.01)),
+            "circuit_voltage": ("voltage", bounded_float(1, 240)),
+        }
+    )
+    defaults = {
+        "query_input": "",
+        "surface_expression": "sin(sqrt(x^2 + y^2))",
+        "surface_x_range": (-5.0, 5.0),
+        "surface_y_range": (-5.0, 5.0),
+        "surface_colorscale": "Viridis",
+        "physics_simulator": "Projectile Motion with Air Drag",
+        "projectile_velocity": 50.0,
+        "projectile_angle": 45.0,
+        "projectile_gravity": 9.8,
+        "projectile_drag": 0.02,
+        "oscillator_mass": 1.0,
+        "oscillator_spring": 20.0,
+        "oscillator_damping": 2.0,
+        "circuit_resistance": 100.0,
+        "circuit_inductance": 0.1,
+        "circuit_capacitance": 0.001,
+        "circuit_voltage": 12.0,
+    }
+    previous_query = st.session_state.get("_share_query_snapshot", {})
+    for state_key, (query_name, parser) in parsers.items():
+        invalid = _seed_query_widget(
+            state_key,
+            query_name,
+            parser,
+            defaults[state_key],
+            previous_query,
+        )
+        if invalid:
+            invalid_parameters.append(invalid)
+    for state_key, default in defaults.items():
+        st.session_state.setdefault(state_key, default)
+    if invalid_parameters:
+        st.sidebar.warning(
+            "Ignored invalid share-link parameter(s): "
+            + ", ".join(sorted(invalid_parameters))
+        )
+
+
+SHAREABLE_STATE = {
+    "q": ("query_input", str),
+    "fx": ("surface_expression", str),
+    "xr": ("surface_x_range", lambda value: f"{value[0]:g},{value[1]:g}"),
+    "yr": ("surface_y_range", lambda value: f"{value[0]:g},{value[1]:g}"),
+    "cs": ("surface_colorscale", str),
+    "sim": ("physics_simulator", str),
+    "v": ("projectile_velocity", str),
+    "angle": ("projectile_angle", str),
+    "g": ("projectile_gravity", str),
+    "drag": ("projectile_drag", str),
+    "mass": ("oscillator_mass", str),
+    "spring": ("oscillator_spring", str),
+    "damping": ("oscillator_damping", str),
+    "resistance": ("circuit_resistance", str),
+    "inductance": ("circuit_inductance", str),
+    "capacitance": ("circuit_capacitance", str),
+    "voltage": ("circuit_voltage", str),
+}
+
+
+def sync_shareable_state():
+    for query_name, (state_key, formatter) in SHAREABLE_STATE.items():
+        if state_key not in st.session_state:
+            continue
+        value = formatter(st.session_state[state_key])
+        if query_name == "q" and not value:
+            if query_name in st.query_params:
+                del st.query_params[query_name]
+        elif _query_value(query_name) != value:
+            st.query_params[query_name] = value
+    st.session_state["_share_query_snapshot"] = {
+        query_name: _query_value(query_name) for query_name in SHAREABLE_STATE
+    }
+
+
+def render_notebook():
+    st.subheader("Notebook / Scratchpad")
+    source = st.text_area(
+        "Enter one expression or assignment per line",
+        value="v0 = 25\nt = 3.5\nd = v0*t - 0.5*9.8*t**2",
+        height=150,
+        key="scratchpad_input",
+    )
+    results = evaluate_notebook(source)
+    if not results:
+        st.caption("Results will appear here as you enter expressions.")
+        return
+    input_column, result_column = st.columns(2)
+    input_column.markdown("**Input**")
+    result_column.markdown("**Evaluated result**")
+    for item in results:
+        with input_column:
+            st.write(f"{item['line_number']}. {item['input']}")
+        with result_column:
+            if "error" in item:
+                st.error(f"Line {item['line_number']}: {item['error']}")
+            else:
+                st.latex(item["result"])
+
+
+def render_homework_checker():
+    st.subheader("Spot the Mistake")
+    with st.form("homework_checker_form"):
+        original = st.text_input(
+            "Original Expression/Problem",
+            placeholder="e.g. integrate x^2",
+            key="homework_original",
+        )
+        attempt = st.text_input(
+            "Your Attempt/Answer",
+            placeholder="e.g. x^3/3",
+            key="homework_attempt",
+        )
+        submitted = st.form_submit_button("Check my work")
+    if submitted:
+        if not original.strip() or not attempt.strip():
+            st.session_state["homework_result"] = {
+                "original": original,
+                "attempt": attempt,
+                "error": "Enter both the original problem and your answer.",
+            }
+        else:
+            try:
+                status, feedback = check_homework(original, attempt)
+                st.session_state["homework_result"] = {
+                    "original": original,
+                    "attempt": attempt,
+                    "status": status,
+                    "feedback": feedback,
+                }
+            except (
+                SyntaxError,
+                TypeError,
+                ValueError,
+                NameError,
+                ZeroDivisionError,
+                sp.SympifyError,
+            ) as exc:
+                st.session_state["homework_result"] = {
+                    "original": original,
+                    "attempt": attempt,
+                    "error": f"Could not parse the problem or answer: {exc}",
+                }
+
+    result = st.session_state.get("homework_result")
+    if result and (
+        result["original"] == original and result["attempt"] == attempt
+    ):
+        if "error" in result:
+            st.error(result["error"])
+        elif result["status"] == "correct":
+            st.success(result["feedback"])
+        elif result["status"] == "almost":
+            st.warning(result["feedback"])
+        else:
+            st.error(result["feedback"])
+
+
+def render_visual_calculus():
+    riemann_tab, taylor_tab = st.tabs(["Riemann Sums", "Taylor Series"])
+    with riemann_tab:
+        render_riemann_visualizer()
+    with taylor_tab:
+        render_taylor_visualizer()
+
+
+def render_study_sheet():
+    st.subheader("LaTeX / Markdown Study Sheet")
+    history = st.session_state.get("calculation_history", [])
+    if not history:
+        st.info("Solved problems will appear here for selection and export.")
+        return
+
+    st.caption("Select the solved problems to include in your worksheet.")
+    selected_reports = []
+    for index, report in enumerate(history):
+        label = f"{index + 1}. {report['query']}"
+        if st.checkbox(label, key=f"history_select_{index}"):
+            selected_reports.append(report)
+    if selected_reports:
+        st.download_button(
+            "Download selected problems (.md)",
+            study_sheet_markdown(selected_reports),
+            file_name="omnimath-study-sheet.md",
+            mime="text/markdown",
+            key="download_study_sheet",
+        )
+    else:
+        st.caption("Choose at least one problem to enable the download.")
+
+
 st.sidebar.title("Math Reference Guide")
 themes = {
     "Midnight Dark": {
@@ -1358,6 +1976,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+initialize_shareable_state()
+
 reference_categories = {
     "Arithmetic & Units": [
         ("Arithmetic", "(5 + 6) * 5"),
@@ -1410,56 +2030,92 @@ solver_tab, surface_tab, simulators_tab = st.tabs(
         "OmniMath Solver",
         "3D Surface Grapher",
         "Physics & Engineering Simulators",
-    ]
+    ],
+    key="active_tab",
+    bind="query-params",
 )
 
-with solver_tab:
-    with st.expander("Camera & Image Math Scanner"):
-        uploaded_math_image = st.file_uploader(
-            "Upload a PNG or JPG image",
-            type=["png", "jpg", "jpeg"],
-            key="math_image_upload",
+if solver_tab.open:
+    with solver_tab:
+        calculator_tab, notebook_tab, checker_tab, calculus_tab, study_tab = st.tabs(
+            [
+                "Calculator",
+                "Notebook / Scratchpad",
+                "Spot the Mistake",
+                "Visual Calculus",
+                "Study Sheet",
+            ]
         )
-        camera_math_image = st.camera_input(
-            "Take a picture of an equation",
-            key="math_camera_input",
+
+        with calculator_tab:
+            with st.expander("Camera & Image Math Scanner"):
+                uploaded_math_image = st.file_uploader(
+                    "Upload a PNG or JPG image",
+                    type=["png", "jpg", "jpeg"],
+                    key="math_image_upload",
+                )
+                camera_math_image = st.camera_input(
+                    "Take a picture of an equation",
+                    key="math_camera_input",
+                )
+                if uploaded_math_image and st.button(
+                    "Extract text from uploaded image",
+                    key="extract_uploaded_math",
+                ):
+                    extract_math_text(uploaded_math_image)
+                if camera_math_image and st.button(
+                    "Extract text from camera image",
+                    key="extract_camera_math",
+                ):
+                    extract_math_text(camera_math_image)
+
+            st.title("OmniMath Calculator")
+            user_input = st.text_input(
+                "Enter a math expression or query (e.g., derivative of x^3):",
+                key="query_input",
+            )
+            if user_input:
+                handle_universal_query(user_input)
+
+        with notebook_tab:
+            render_notebook()
+
+        with checker_tab:
+            render_homework_checker()
+
+        with calculus_tab:
+            render_visual_calculus()
+
+        with study_tab:
+            render_study_sheet()
+
+if surface_tab.open:
+    with surface_tab:
+        render_surface_grapher()
+
+if simulators_tab.open:
+    with simulators_tab:
+        selected_simulator = st.selectbox(
+            "Choose a simulator",
+            [
+                "Projectile Motion with Air Drag",
+                "Damped Harmonic Oscillator",
+                "RC / RLC Circuit Transient Response",
+            ],
+            key="physics_simulator",
         )
-        if uploaded_math_image and st.button(
-            "Extract text from uploaded image",
-            key="extract_uploaded_math",
-        ):
-            extract_math_text(uploaded_math_image)
-        if camera_math_image and st.button(
-            "Extract text from camera image",
-            key="extract_camera_math",
-        ):
-            extract_math_text(camera_math_image)
+        if selected_simulator == "Projectile Motion with Air Drag":
+            render_projectile_simulator()
+        elif selected_simulator == "Damped Harmonic Oscillator":
+            render_oscillator_simulator()
+        else:
+            render_circuit_simulator()
 
-    st.title("OmniMath Calculator")
-    user_input = st.text_input(
-        "Enter a math expression or query (e.g., derivative of x^3):",
-        key="query_input",
-    )
-
-    if user_input:
-        handle_universal_query(user_input)
-
-with surface_tab:
-    render_surface_grapher()
-
-with simulators_tab:
-    selected_simulator = st.selectbox(
-        "Choose a simulator",
-        [
-            "Projectile Motion with Air Drag",
-            "Damped Harmonic Oscillator",
-            "RC / RLC Circuit Transient Response",
-        ],
-        key="physics_simulator",
-    )
-    if selected_simulator == "Projectile Motion with Air Drag":
-        render_projectile_simulator()
-    elif selected_simulator == "Damped Harmonic Oscillator":
-        render_oscillator_simulator()
+sync_shareable_state()
+with st.sidebar.expander("Shareable problem link"):
+    query_string = urlencode(st.query_params.to_dict(), doseq=True)
+    if query_string:
+        st.caption("Copy this query string and append it to the app URL:")
+        st.code(f"?{query_string}", language="text")
     else:
-        render_circuit_simulator()
+        st.caption("Enter a problem or adjust a graph/simulator to create a share link.")

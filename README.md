@@ -12,6 +12,11 @@ An interactive, web-based algebra and graphing calculator built with **Python**,
 - **Quadratic Analyzer:** Automatically calculates the discriminant, vertex coordinates, and real or complex roots—and plots the parabola.
 - **Systems of Equations Solver:** Solves two-variable linear or nonlinear systems (e.g., `2x + y = 10; x - y = 2`) and graphs their intersection point.
 - **Step-by-Step Solutions:** Explanations for equations, derivatives, integrals, arithmetic, and supported symbolic operations.
+- **Notebook / Scratchpad:** Evaluate multi-line expressions and reuse variables defined earlier in the notebook.
+- **Spot the Mistake:** Check algebraic answers and get targeted hints for sign, power-rule, integration-constant, and angle-unit mistakes.
+- **Visual Calculus:** Explore left, right, and midpoint Riemann sums and compare Taylor polynomials with their functions.
+- **Shareable Problem Links:** URL parameters preserve the active tab, main query, surface graph, and simulator settings.
+- **Study Sheet Export:** Select solved problems from the session history and download their steps and final answers as Markdown.
 - **Advanced Symbolic Math:** ODEs, Taylor series, summations, partial fractions, trigonometric simplification, and matrix operations.
 - **Statistics & Number Theory:** Mean, median, mode, population variance and standard deviation, prime factors, GCD, and LCM.
 - **Math Reference Guide:** Expandable sidebar categories with clickable example queries for supported topics.
@@ -29,8 +34,9 @@ cd YOUR_REPO_NAME
 
 ### 2. Install Dependencies
 ```bash
-python -m pip install streamlit sympy matplotlib numpy
+python -m pip install -r requirements.txt
 ```
+The image scanner also requires the Tesseract OCR system package.
 
 ### 3. Launch the App
 ```bash
@@ -65,3 +71,4 @@ python -m streamlit run calculator.py
 - [SymPy](https://sympy.org) – Symbolic mathematics & exact algebra
 - [Matplotlib](https://matplotlib.org) – 2D function and intersection plotting
 - [NumPy](https://numpy.org) – Numerical array evaluation
+- [Plotly](https://plotly.com/python/) – Interactive 3D and calculus visualizations
