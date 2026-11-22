@@ -228,14 +228,14 @@ def handle_universal_query(raw_query: str):
         render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
         return
         if "=" in cleaned:
-        lhs_str, rhs_str = cleaned.split("=", 1)
-        lhs, rhs = clean_and_parse(lhs_str), clean_and_parse(rhs_str)
-        eq = sp.Eq(lhs, rhs)
-        vars_in_eq = list(eq.free_symbols) or [x]
-        sols = sp.solve(eq, vars_in_eq[0])
-        st.subheader("Equation Solution")
-        st.latex(sp.latex(eq) + r" \implies " + sp.latex(vars_in_eq[0]) + " = " + sp.latex(sols))
-        return
+                lhs_str, rhs_str = cleaned.split("=", 1)
+                lhs, rhs = clean_and_parse(lhs_str), clean_and_parse(rhs_str)
+                eq = sp.Eq(lhs, rhs)
+                vars_in_eq = list(eq.free_symbols) or [x]
+                sols = sp.solve(eq, vars_in_eq[0])
+                st.subheader("Equation Solution")
+                st.latex(sp.latex(eq) + r" \implies " + sp.latex(vars_in_eq[0]) + " = " + sp.latex(sols))
+                return
 
 if re.match(r"^(?:integrate|integral|antiderivative)\b", cleaned, re.I):
         target = re.sub(r"^(?:integrate|integral|antiderivative)(?:\s+of)?\s*", "", cleaned, flags=re.I)
