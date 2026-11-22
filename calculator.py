@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import sympy as sp
 import pytesseract
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from PIL import Image, UnidentifiedImageError
 from sympy.parsing.sympy_parser import (
     parse_expr,
@@ -306,6 +308,420 @@ def render_plot(expressions, labels, x_min=-10.0, x_max=10.0, points=None, title
     plt.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+
+
+def render_surface_grapher():
+    st.subheader("Interactive 3D Surface")
+    expression_text = st.text_input(
+        "Enter z = f(x, y)",
+        value="sin(sqrt(x^2 + y^2))",
+        key="surface_expression",
+    )
+    x_range = st.slider(
+        "x range",
+        min_value=-10.0,
+        max_value=10.0,
+        value=(-5.0, 5.0),
+        step=0.5,
+        key="surface_x_range",
+    )
+    y_range = st.slider(
+        "y range",
+        min_value=-10.0,
+        max_value=10.0,
+        value=(-5.0, 5.0),
+        step=0.5,
+        key="surface_y_range",
+    )
+    colorscale = st.selectbox(
+        "Colorscale",
+        ["Viridis", "Plasma", "Inferno", "Cividis"],
+        key="surface_colorscale",
+    )
+
+    try:
+        expression = clean_and_parse(expression_text)
+        unsupported_symbols = expression.free_symbols - {x, y}
+        if unsupported_symbols:
+            st.error(
+                "Use only x and y as variables in the surface expression: "
+                + ", ".join(sorted(str(symbol) for symbol in unsupported_symbols))
+            )
+            return
+        x_derivative = sp.diff(expression, x)
+        y_derivative = sp.diff(expression, y)
+        x_values = np.linspace(x_range[0], x_range[1], 70)
+        y_values = np.linspace(y_range[0], y_range[1], 70)
+        x_mesh, y_mesh = np.meshgrid(x_values, y_values)
+        surface_function = sp.lambdify((x, y), expression, modules=["numpy"])
+        with np.errstate(all="ignore"):
+            z_mesh = np.asarray(surface_function(x_mesh, y_mesh))
+        if np.iscomplexobj(z_mesh):
+            if np.any(np.abs(np.imag(z_mesh)) > 1e-12):
+                raise ValueError("The surface expression must evaluate to real values.")
+            z_mesh = np.real(z_mesh)
+        if z_mesh.ndim == 0:
+            z_mesh = np.full_like(x_mesh, float(z_mesh))
+        else:
+            z_mesh = np.broadcast_to(z_mesh, x_mesh.shape).astype(float)
+        z_mesh = np.where(np.isfinite(z_mesh), z_mesh, np.nan)
+    except Exception as exc:
+        st.error(f"Could not evaluate this surface expression: {exc}")
+        return
+
+    figure = go.Figure(
+        data=[
+            go.Surface(
+                x=x_mesh,
+                y=y_mesh,
+                z=z_mesh,
+                colorscale=colorscale,
+                colorbar={"title": "z"},
+            )
+        ]
+    )
+    figure.update_layout(
+        title=f"z = {expression_text}",
+        scene={
+            "xaxis_title": "x",
+            "yaxis_title": "y",
+            "zaxis_title": "z",
+        },
+        margin={"l": 0, "r": 0, "t": 45, "b": 0},
+    )
+    st.plotly_chart(figure, width="stretch", key="surface_plot")
+    st.latex(r"\frac{\partial z}{\partial x} = " + sp.latex(x_derivative))
+    st.latex(r"\frac{\partial z}{\partial y} = " + sp.latex(y_derivative))
+
+
+def projectile_trajectory(speed, angle_degrees, gravity, drag_coefficient):
+    angle = math.radians(angle_degrees)
+    state = np.array(
+        [0.0, 0.0, speed * math.cos(angle), speed * math.sin(angle)],
+        dtype=float,
+    )
+    time_step = 0.02
+    trajectory = [state.copy()]
+    flight_time = 0.0
+
+    def derivative(current_state):
+        _, _, velocity_x, velocity_y = current_state
+        velocity = math.hypot(velocity_x, velocity_y)
+        return np.array(
+            [
+                velocity_x,
+                velocity_y,
+                -drag_coefficient * velocity * velocity_x,
+                -gravity - drag_coefficient * velocity * velocity_y,
+            ]
+        )
+
+    for step in range(1, 10001):
+        k1 = derivative(state)
+        k2 = derivative(state + time_step * k1 / 2)
+        k3 = derivative(state + time_step * k2 / 2)
+        k4 = derivative(state + time_step * k3)
+        next_state = state + time_step * (k1 + 2 * k2 + 2 * k3 + k4) / 6
+        if next_state[1] <= 0:
+            fraction = state[1] / (state[1] - next_state[1])
+            state = state + fraction * (next_state - state)
+            state[1] = 0.0
+            flight_time = (step - 1 + fraction) * time_step
+            trajectory.append(state.copy())
+            break
+        state = next_state
+        flight_time = step * time_step
+        trajectory.append(state.copy())
+    return np.asarray(trajectory), flight_time
+
+
+def render_projectile_simulator():
+    st.subheader("Projectile Motion with Air Drag")
+    velocity = st.slider(
+        "Launch velocity (m/s)",
+        min_value=1.0,
+        max_value=100.0,
+        value=50.0,
+        step=1.0,
+        key="projectile_velocity",
+    )
+    angle = st.slider(
+        "Launch angle (degrees)",
+        min_value=0.0,
+        max_value=90.0,
+        value=45.0,
+        step=1.0,
+        key="projectile_angle",
+    )
+    gravity = st.slider(
+        "Gravity (m/s²)",
+        min_value=1.0,
+        max_value=20.0,
+        value=9.8,
+        step=0.1,
+        key="projectile_gravity",
+    )
+    drag = st.slider(
+        "Normalized quadratic drag coefficient (1/m)",
+        min_value=0.0,
+        max_value=0.2,
+        value=0.02,
+        step=0.005,
+        key="projectile_drag",
+    )
+
+    angle_radians = math.radians(angle)
+    ideal_flight_time = 2 * velocity * math.sin(angle_radians) / gravity
+    ideal_time = np.linspace(0, ideal_flight_time, 300)
+    ideal_x = velocity * math.cos(angle_radians) * ideal_time
+    ideal_y = (
+        velocity * math.sin(angle_radians) * ideal_time
+        - 0.5 * gravity * ideal_time**2
+    )
+    drag_path, drag_flight_time = projectile_trajectory(
+        velocity, angle, gravity, drag
+    )
+    drag_max_height = float(np.max(drag_path[:, 1]))
+    drag_range = float(drag_path[-1, 0])
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(x=ideal_x, y=ideal_y, mode="lines", name="Ideal (no drag)")
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=drag_path[:, 0],
+            y=drag_path[:, 1],
+            mode="lines",
+            name="With air drag",
+        )
+    )
+    figure.update_layout(
+        title="Projectile Trajectory",
+        xaxis_title="Horizontal distance (m)",
+        yaxis_title="Height (m)",
+        legend={"orientation": "h"},
+    )
+    st.plotly_chart(figure, width="stretch", key="projectile_plot")
+
+    ideal_height = velocity**2 * math.sin(angle_radians) ** 2 / (2 * gravity)
+    ideal_range = velocity**2 * math.sin(2 * angle_radians) / gravity
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("Ideal max height", f"{ideal_height:.2f} m")
+    metric_columns[1].metric("Ideal range", f"{ideal_range:.2f} m")
+    metric_columns[2].metric("Ideal flight time", f"{ideal_flight_time:.2f} s")
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("Drag max height", f"{drag_max_height:.2f} m")
+    metric_columns[1].metric("Drag range", f"{drag_range:.2f} m")
+    metric_columns[2].metric("Drag flight time", f"{drag_flight_time:.2f} s")
+
+
+def render_oscillator_simulator():
+    st.subheader("Damped Harmonic Oscillator")
+    st.caption("Assumes an initial displacement of 1 m and an initial velocity of 0 m/s.")
+    mass = st.slider(
+        "Mass, m (kg)",
+        min_value=0.1,
+        max_value=10.0,
+        value=1.0,
+        step=0.1,
+        key="oscillator_mass",
+    )
+    spring = st.slider(
+        "Spring constant, k (N/m)",
+        min_value=0.1,
+        max_value=50.0,
+        value=20.0,
+        step=0.1,
+        key="oscillator_spring",
+    )
+    damping = st.slider(
+        "Damping coefficient, c (N·s/m)",
+        min_value=0.0,
+        max_value=20.0,
+        value=2.0,
+        step=0.1,
+        key="oscillator_damping",
+    )
+
+    time = np.linspace(0, 10, 1000)
+    discriminant = damping**2 - 4 * mass * spring
+    tolerance = 1e-12 * max(damping**2, 4 * mass * spring, 1.0)
+    if discriminant < -tolerance:
+        damping_rate = -damping / (2 * mass)
+        damped_frequency = math.sqrt(4 * mass * spring - damping**2) / (2 * mass)
+        sine_coefficient = -damping_rate / damped_frequency
+        envelope = np.exp(damping_rate * time)
+        displacement = envelope * (
+            np.cos(damped_frequency * time)
+            + sine_coefficient * np.sin(damped_frequency * time)
+        )
+        velocity = (
+            -envelope
+            * (damping_rate**2 + damped_frequency**2)
+            / damped_frequency
+            * np.sin(damped_frequency * time)
+        )
+        system_type = "underdamped"
+    elif discriminant > tolerance:
+        root = math.sqrt(discriminant)
+        root_1 = (-damping + root) / (2 * mass)
+        root_2 = (-damping - root) / (2 * mass)
+        coefficient_1 = -root_2 / (root_1 - root_2)
+        coefficient_2 = root_1 / (root_1 - root_2)
+        term_1 = coefficient_1 * np.exp(root_1 * time)
+        term_2 = coefficient_2 * np.exp(root_2 * time)
+        displacement = term_1 + term_2
+        velocity = root_1 * term_1 + root_2 * term_2
+        system_type = "overdamped"
+    else:
+        repeated_root = -damping / (2 * mass)
+        envelope = np.exp(repeated_root * time)
+        displacement = (1 - repeated_root * time) * envelope
+        velocity = -(repeated_root**2) * time * envelope
+        system_type = "critically damped"
+
+    figure = make_subplots(specs=[[{"secondary_y": True}]])
+    figure.add_trace(
+        go.Scatter(x=time, y=displacement, name="Displacement x(t)"),
+        secondary_y=False,
+    )
+    figure.add_trace(
+        go.Scatter(x=time, y=velocity, name="Velocity v(t)"),
+        secondary_y=True,
+    )
+    figure.update_layout(
+        title="Spring-Mass-Damper Response",
+        legend={"orientation": "h"},
+    )
+    figure.update_xaxes(title_text="Time (s)")
+    figure.update_yaxes(title_text="Displacement (m)", secondary_y=False)
+    figure.update_yaxes(title_text="Velocity (m/s)", secondary_y=True)
+    st.plotly_chart(figure, width="stretch", key="oscillator_plot")
+    st.info(f"The system is {system_type}.")
+
+
+def render_circuit_simulator():
+    st.subheader("RC / RLC Circuit Transient Response")
+    resistance = st.slider(
+        "Resistance, R (Ω)",
+        min_value=1.0,
+        max_value=1000.0,
+        value=100.0,
+        step=1.0,
+        key="circuit_resistance",
+    )
+    inductance = st.slider(
+        "Inductance, L (H; set to 0 for an RC circuit)",
+        min_value=0.0,
+        max_value=5.0,
+        value=0.1,
+        step=0.01,
+        key="circuit_inductance",
+    )
+    capacitance = st.slider(
+        "Capacitance, C (F)",
+        min_value=0.0001,
+        max_value=0.01,
+        value=0.001,
+        step=0.0001,
+        format="%.4f",
+        key="circuit_capacitance",
+    )
+    voltage = st.slider(
+        "Input voltage (V)",
+        min_value=1.0,
+        max_value=240.0,
+        value=12.0,
+        step=1.0,
+        key="circuit_voltage",
+    )
+
+    if inductance == 0:
+        time_constant = resistance * capacitance
+        duration = max(5 * time_constant, 0.1)
+        time = np.linspace(0, duration, 1000)
+        capacitor_voltage = voltage * (1 - np.exp(-time / time_constant))
+        current = voltage / resistance * np.exp(-time / time_constant)
+        response_type = "RC response"
+    else:
+        natural_frequency_squared = 1 / (inductance * capacitance)
+        damping_rate = resistance / (2 * inductance)
+        discriminant = damping_rate**2 - natural_frequency_squared
+        duration = max(
+            5 * resistance * capacitance,
+            10 * math.pi * math.sqrt(inductance * capacitance),
+            0.1,
+        )
+        time = np.linspace(0, duration, 1200)
+        if discriminant < -1e-12 * natural_frequency_squared:
+            damped_frequency = math.sqrt(-discriminant)
+            envelope = np.exp(-damping_rate * time)
+            capacitor_voltage = voltage * (
+                1
+                - envelope
+                * (
+                    np.cos(damped_frequency * time)
+                    + damping_rate
+                    / damped_frequency
+                    * np.sin(damped_frequency * time)
+                )
+            )
+            current = (
+                voltage
+                / (inductance * damped_frequency)
+                * envelope
+                * np.sin(damped_frequency * time)
+            )
+            response_type = "underdamped RLC response"
+        elif discriminant > 1e-12 * natural_frequency_squared:
+            root = math.sqrt(discriminant)
+            root_1 = -damping_rate + root
+            root_2 = -damping_rate - root
+            coefficient_1 = root_2 / (root_1 - root_2)
+            coefficient_2 = -root_1 / (root_1 - root_2)
+            exponential_1 = np.exp(root_1 * time)
+            exponential_2 = np.exp(root_2 * time)
+            capacitor_voltage = voltage * (
+                1 + coefficient_1 * exponential_1 + coefficient_2 * exponential_2
+            )
+            current = voltage * capacitance * (
+                coefficient_1 * root_1 * exponential_1
+                + coefficient_2 * root_2 * exponential_2
+            )
+            response_type = "overdamped RLC response"
+        else:
+            envelope = np.exp(-damping_rate * time)
+            capacitor_voltage = voltage * (
+                1 - (1 + damping_rate * time) * envelope
+            )
+            current = (
+                voltage
+                * capacitance
+                * damping_rate**2
+                * time
+                * envelope
+            )
+            response_type = "critically damped RLC response"
+
+    figure = make_subplots(specs=[[{"secondary_y": True}]])
+    figure.add_trace(
+        go.Scatter(x=time, y=capacitor_voltage, name="Capacitor voltage"),
+        secondary_y=False,
+    )
+    figure.add_trace(
+        go.Scatter(x=time, y=current, name="Circuit current"),
+        secondary_y=True,
+    )
+    figure.update_layout(
+        title=f"Circuit Step Response ({response_type})",
+        legend={"orientation": "h"},
+    )
+    figure.update_xaxes(title_text="Time (s)")
+    figure.update_yaxes(title_text="Capacitor voltage (V)", secondary_y=False)
+    figure.update_yaxes(title_text="Current (A)", secondary_y=True)
+    st.plotly_chart(figure, width="stretch", key="circuit_plot")
+    st.info(response_type[0].upper() + response_type[1:] + ".")
 
 
 # ==============================================================================
@@ -942,27 +1358,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("Camera & Image Math Scanner"):
-    uploaded_math_image = st.file_uploader(
-        "Upload a PNG or JPG image",
-        type=["png", "jpg", "jpeg"],
-        key="math_image_upload",
-    )
-    camera_math_image = st.camera_input(
-        "Take a picture of an equation",
-        key="math_camera_input",
-    )
-    if uploaded_math_image and st.button(
-        "Extract text from uploaded image",
-        key="extract_uploaded_math",
-    ):
-        extract_math_text(uploaded_math_image)
-    if camera_math_image and st.button(
-        "Extract text from camera image",
-        key="extract_camera_math",
-    ):
-        extract_math_text(camera_math_image)
-
 reference_categories = {
     "Arithmetic & Units": [
         ("Arithmetic", "(5 + 6) * 5"),
@@ -1010,11 +1405,61 @@ for category, examples in reference_categories.items():
                 args=(query,),
             )
 
-st.title("OmniMath Calculator")
-user_input = st.text_input(
-    "Enter a math expression or query (e.g., derivative of x^3):",
-    key="query_input",
+solver_tab, surface_tab, simulators_tab = st.tabs(
+    [
+        "OmniMath Solver",
+        "3D Surface Grapher",
+        "Physics & Engineering Simulators",
+    ]
 )
 
-if user_input:
-    handle_universal_query(user_input)
+with solver_tab:
+    with st.expander("Camera & Image Math Scanner"):
+        uploaded_math_image = st.file_uploader(
+            "Upload a PNG or JPG image",
+            type=["png", "jpg", "jpeg"],
+            key="math_image_upload",
+        )
+        camera_math_image = st.camera_input(
+            "Take a picture of an equation",
+            key="math_camera_input",
+        )
+        if uploaded_math_image and st.button(
+            "Extract text from uploaded image",
+            key="extract_uploaded_math",
+        ):
+            extract_math_text(uploaded_math_image)
+        if camera_math_image and st.button(
+            "Extract text from camera image",
+            key="extract_camera_math",
+        ):
+            extract_math_text(camera_math_image)
+
+    st.title("OmniMath Calculator")
+    user_input = st.text_input(
+        "Enter a math expression or query (e.g., derivative of x^3):",
+        key="query_input",
+    )
+
+    if user_input:
+        handle_universal_query(user_input)
+
+with surface_tab:
+    render_surface_grapher()
+
+with simulators_tab:
+    selected_simulator = st.selectbox(
+        "Choose a simulator",
+        [
+            "Projectile Motion with Air Drag",
+            "Damped Harmonic Oscillator",
+            "RC / RLC Circuit Transient Response",
+        ],
+        key="physics_simulator",
+    )
+    if selected_simulator == "Projectile Motion with Air Drag":
+        render_projectile_simulator()
+    elif selected_simulator == "Damped Harmonic Oscillator":
+        render_oscillator_simulator()
+    else:
+        render_circuit_simulator()
