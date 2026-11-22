@@ -537,7 +537,7 @@ def _request_agent_completion(provider: str, api_key: str, conversation):
                     method="POST",
                 )
                 try:
-                    with urlopen(request, timeout=30) as response:
+                    with urlopen(request, timeout=20) as response:
                         payload = json.loads(response.read().decode("utf-8"))
                     completed = True
                     break
@@ -550,13 +550,14 @@ def _request_agent_completion(provider: str, api_key: str, conversation):
                     if model_index == 0 and attempt == 0 and is_temporary:
                         time.sleep(1)
                         continue
-                    if is_temporary or (model_index > 0 and exc.code == 404):
+                    if is_temporary or exc.code == 404:
                         break
                     raise last_error from exc
                 except (URLError, TimeoutError, OSError) as exc:
-                    raise RuntimeError(
+                    last_error = RuntimeError(
                         f"Could not reach the {provider.title()} API: {exc}"
-                    ) from exc
+                    )
+                    break
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise RuntimeError(
                         f"The {provider.title()} API returned an invalid response."
@@ -612,6 +613,47 @@ def _translate_linear_word_problem(prompt: str):
     except ValueError:
         return None
     return translated
+
+
+def _translate_system_word_problem(prompt: str):
+    match = re.fullmatch(
+        r"\s*if\s+(.+?)\s+then\s+(?:what is|calculate|compute|find)\s+(.+?)\s*[?.!]*\s*",
+        prompt,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    def translate_expression(text):
+        translated = text.strip().lower()
+        translated = re.sub(
+            r"\bto the power of\s+(\d+)\b", r"**\1", translated
+        )
+        translated = re.sub(r"\bsquared\b", "**2", translated)
+        translated = re.sub(r"\bxy\b", "(x*y)", translated)
+        translated = re.sub(r"\bplus\b", "+", translated)
+        translated = re.sub(r"\bminus\b", "-", translated)
+        translated = re.sub(r"\bequals\b", "=", translated)
+        return translated
+
+    equations_text, result_text = match.groups()
+    equation_parts = re.split(
+        r"\s*,\s*(?:and\s+)?|\s+\band\b\s+",
+        equations_text,
+        flags=re.IGNORECASE,
+    )
+    equations = [translate_expression(part) for part in equation_parts]
+    if len(equations) < 2 or not all("=" in equation for equation in equations):
+        return None
+
+    system_text = ", ".join(equations)
+    result_text = translate_expression(result_text)
+    try:
+        _validate_agent_expression(system_text)
+        _validate_agent_expression(result_text)
+    except ValueError:
+        return None
+    return system_text, result_text
 
 
 def _local_agent_response(prompt: str, conversation):
@@ -716,6 +758,52 @@ def _local_agent_response(prompt: str, conversation):
         )
         return display, "solver", sp.sstr(value)
 
+    word_problem = _translate_system_word_problem(normalized)
+    if word_problem:
+        system_text, result_text = word_problem
+        equations = []
+        for equation_text in _split_top_level_commas(system_text):
+            left_text, right_text = equation_text.split("=", 1)
+            equations.append(
+                sp.Eq(clean_and_parse(left_text), clean_and_parse(right_text))
+            )
+        solutions = sp.solve(
+            equations,
+            sorted(
+                set().union(*(equation.free_symbols for equation in equations)),
+                key=str,
+            ),
+            dict=True,
+        )
+        expression = clean_and_parse(result_text)
+        results = [sp.simplify(expression.subs(solution)) for solution in solutions]
+        if not results:
+            answer_text = (
+                "SymPy found no solution for the given equations, so the requested "
+                "expression cannot be evaluated."
+            )
+            result_value = None
+        else:
+            rendered_results = "; ".join(
+                sp.latex(result) for result in results
+            )
+            answer_text = (
+                f"1. Translate the equations: \\({sp.latex(equations[0])}\\)"
+                + "".join(
+                    f", \\({sp.latex(equation)}\\)" for equation in equations[1:]
+                )
+                + f".\n\n2. Solve the system with SymPy: "
+                f"\\({_agent_result_latex(solutions)}\\).\n\n"
+                f"3. Substitute into \\({sp.latex(expression)}\\): "
+                f"$$ {rendered_results} $$"
+            )
+            result_value = results[0] if len(results) == 1 else None
+        return (
+            answer_text,
+            "solver" if result_value is not None else None,
+            sp.sstr(result_value) if result_value is not None else None,
+        )
+
     equation_text = _translate_linear_word_problem(normalized)
     if equation_text is None:
         equation_text = normalized
@@ -753,7 +841,11 @@ def _generate_agent_response(prompt: str, conversation):
         answer, target, send_expression = _local_agent_response(prompt, conversation)
         return answer, target, send_expression, "Local SymPy"
 
-    raw_response = _request_agent_completion(provider, api_key, conversation)
+    try:
+        raw_response = _request_agent_completion(provider, api_key, conversation)
+    except RuntimeError:
+        answer, target, send_expression = _local_agent_response(prompt, conversation)
+        return answer, target, send_expression, "Local SymPy"
     match = re.search(r"<sympy>\s*(.*?)\s*</sympy>", raw_response, re.IGNORECASE | re.DOTALL)
     response_text = re.sub(
         r"\s*<sympy>.*?</sympy>\s*",
