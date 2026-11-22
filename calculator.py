@@ -227,6 +227,44 @@ def handle_universal_query(raw_query: str):
             labels.append(f"y = {e}")
         render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
         return
+        if "=" in cleaned:
+lhs_str, rhs_str = cleaned.split("=", 1)
+lhs, rhs = clean_and_parse(lhs_str), clean_and_parse(rhs_str)
+eq = sp.Eq(lhs, rhs)
+vars_in_eq = list(eq.free_symbols) or [x]
+sols = sp.solve(eq, vars_in_eq[0])
+st.subheader("Equation Solution")
+st.latex(sp.latex(eq) + r" \implies " + sp.latex(vars_in_eq[0]) + " = " + sp.latex(sols))
+return
+
+if re.match(r"^(?:integrate|integral|antiderivative)\b", cleaned, re.I):
+target = re.sub(r"^(?:integrate|integral|antiderivative)(?:\s+of)?\s*", "", cleaned, flags=re.I)
+expr = clean_and_parse(target)
+res = sp.integrate(expr, x)
+st.subheader("Indefinite Integral")
+st.latex(r"\int \left(" + sp.latex(expr) + r"\right)\,dx = " + sp.latex(res) + " + C")
+return
+
+lim_match = re.match(r"^limit\s+(.+?)\s+(?:as\s+)?x\s*(?:->|→|to)\s*(.+)$", cleaned, re.I)
+if lim_match:
+expr = clean_and_parse(lim_match.group(1))
+pt = clean_and_parse(lim_match.group(2).replace("infinity", "oo").replace("inf", "oo"))
+res = sp.limit(expr, x, pt)
+st.subheader("Limit Result")
+st.latex(r"\lim_{x \to " + sp.latex(pt) + r"} \left(" + sp.latex(expr) + r"\right) = " + sp.latex(res))
+return
+
+if re.match(r"^factor\b", cleaned, re.I):
+expr = clean_and_parse(re.sub(r"^factor(?:\s+of)?\s*", "", cleaned, flags=re.I))
+st.subheader("Factored Form")
+st.latex(sp.latex(expr) + " = " + sp.latex(sp.factor(expr)))
+return
+
+if re.match(r"^expand\b", cleaned, re.I):
+expr = clean_and_parse(re.sub(r"^expand(?:\s+of)?\s*", "", cleaned, flags=re.I))
+st.subheader("Expanded Form")
+st.latex(sp.latex(expr) + " = " + sp.latex(sp.expand(expr)))
+return
 
     # 5. Calculus: Derivative
     deriv_match = re.match(r"^(?:derivative|differentiate|d/dx)\s+(?:of\s+)?(.+)$", cleaned, flags=re.IGNORECASE)
