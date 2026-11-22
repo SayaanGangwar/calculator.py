@@ -520,7 +520,7 @@ def _request_agent_completion(provider: str, api_key: str, conversation):
             "generationConfig": {"temperature": 0.1},
         }
         request = Request(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             data=json.dumps(body).encode("utf-8"),
             headers={
                 "x-goog-api-key": api_key,
