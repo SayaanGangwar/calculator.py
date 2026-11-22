@@ -7,6 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
 import sympy as sp
+import pytesseract
+from PIL import Image, UnidentifiedImageError
 from sympy.parsing.sympy_parser import (
     parse_expr,
     standard_transformations,
@@ -57,9 +59,101 @@ def clean_and_parse(expr_str: str):
 
 
 def show_steps(title: str, steps):
+    record_solution_steps(steps)
     with st.expander(title):
         for step in steps:
             st.write(step)
+
+
+def record_solution_steps(steps):
+    capture = st.session_state.get("_solution_capture")
+    if capture is not None:
+        capture["steps"].extend(str(step) for step in steps)
+
+
+def record_solution_answer(answer):
+    capture = st.session_state.get("_solution_capture")
+    if capture is not None:
+        capture["answer"] = str(answer)
+
+
+def solution_report_text(report):
+    lines = [
+        "OmniMath Solution Report",
+        f"Query: {report['query']}",
+        "",
+        "Final answer:",
+        report["answer"],
+        "",
+        "Step-by-step breakdown:",
+    ]
+    if report["steps"]:
+        lines.extend(
+            f"{index}. {step}" for index, step in enumerate(report["steps"], 1)
+        )
+    else:
+        lines.append("No step-by-step explanation is available for this result.")
+    return "\n".join(lines)
+
+
+def solution_report_markdown(report):
+    answer = report["answer"]
+    if "\n" in answer or (
+        re.search(r"[A-Za-z]", answer)
+        and not re.search(r"\\[A-Za-z]+", answer)
+        and re.search(r"[A-Za-z]{3,}", answer)
+    ):
+        formatted_answer = f"```text\n{answer}\n```"
+    else:
+        formatted_answer = f"$$\n{answer}\n$$"
+    lines = [
+        "# OmniMath Solution Report",
+        f"**Query:** {report['query']}",
+        "",
+        "## Final answer",
+        "",
+        formatted_answer,
+        "",
+        "## Step-by-step breakdown",
+    ]
+    if report["steps"]:
+        lines.extend(
+            f"{index}. {step}" for index, step in enumerate(report["steps"], 1)
+        )
+    else:
+        lines.append("No step-by-step explanation is available for this result.")
+    return "\n".join(lines)
+
+
+def handle_universal_query(raw_query: str):
+    query = raw_query.strip()
+    if not query:
+        return
+
+    capture = {"query": query, "answer": "", "steps": []}
+    st.session_state["_solution_capture"] = capture
+    _handle_universal_query(raw_query)
+    st.session_state.pop("_solution_capture", None)
+
+    if not capture["answer"]:
+        st.session_state["solution_report"] = None
+        return
+
+    st.session_state["solution_report"] = capture
+    st.download_button(
+        "Download solution (.txt)",
+        solution_report_text(capture),
+        file_name="omnimath-solution.txt",
+        mime="text/plain",
+        key="download_solution_txt",
+    )
+    st.download_button(
+        "Download solution (.md)",
+        solution_report_markdown(capture),
+        file_name="omnimath-solution.md",
+        mime="text/markdown",
+        key="download_solution_md",
+    )
 
 
 def system_substitution_steps(eqs, variables):
@@ -269,7 +363,7 @@ def convert_units(val: float, u_from: str, u_to: str):
 # ==============================================================================
 # NATURAL LANGUAGE / UNIVERSAL MATH ENGINE
 # ==============================================================================
-def handle_universal_query(raw_query: str):
+def _handle_universal_query(raw_query: str):
     q = raw_query.strip()
     if not q:
         return
@@ -286,6 +380,8 @@ def handle_universal_query(raw_query: str):
         res = convert_units(val, u1, u2)
         if res is not None:
             st.success(f"**{val} {u1} = {res:.6g} {u2}**")
+            record_solution_answer(f"{val} {u1} = {res:.6g} {u2}")
+            record_solution_steps([f"Convert {val} {u1} to {res:.6g} {u2}."])
             return
         st.warning("Those units are incompatible or not recognized.")
         return
@@ -322,6 +418,12 @@ def handle_universal_query(raw_query: str):
         else:
             for idx, s in enumerate(sol, 1):
                 st.latex(f"\\text{{Solution {idx}: }} " + ",\\quad ".join(f"{k} = {sp.latex(v)}" for k, v in s.items()))
+            record_solution_answer(
+                "; ".join(
+                    ", ".join(f"{key} = {sp.latex(value)}" for key, value in solution.items())
+                    for solution in sol
+                )
+            )
             with st.expander("Show Step-by-Step Solution"):
                 variables = sorted(all_syms, key=str)
                 steps = (
@@ -330,13 +432,16 @@ def handle_universal_query(raw_query: str):
                     else None
                 )
                 if steps:
+                    record_solution_steps(steps)
                     for step in steps:
                         st.latex(step)
                 else:
-                    st.write(
+                    fallback_step = (
                         "Substitution steps are available when equation 1 uniquely "
                         "isolates the first variable in a two-variable system."
                     )
+                    record_solution_steps([fallback_step])
+                    st.write(fallback_step)
             if len(eqs) == 2 and x in all_syms and y in all_syms:
                 y_exprs, labels = [], []
                 for idx, eq in enumerate(eqs, 1):
@@ -381,6 +486,7 @@ def handle_universal_query(raw_query: str):
             solution = sp.dsolve(eq)
             st.subheader("Differential Equation Solution")
             st.latex(sp.latex(solution))
+            record_solution_answer(sp.latex(solution))
             show_steps(
                 "Show Step-by-Step Solution",
                 [
@@ -407,6 +513,7 @@ def handle_universal_query(raw_query: str):
             result = sp.series(expr, x, center, order)
             st.subheader("Taylor Series")
             st.latex(sp.latex(result))
+            record_solution_answer(sp.latex(result))
             show_steps(
                 "Show Step-by-Step Solution",
                 [
@@ -434,6 +541,7 @@ def handle_universal_query(raw_query: str):
             result = sp.summation(expr, (index, lower, upper))
             st.subheader("Summation")
             st.latex(sp.latex(result))
+            record_solution_answer(sp.latex(result))
             show_steps(
                 "Show Step-by-Step Solution",
                 [
@@ -456,6 +564,7 @@ def handle_universal_query(raw_query: str):
                 result = operation(expr)
                 st.subheader(heading)
                 st.latex(sp.latex(expr) + " = " + sp.latex(result))
+                record_solution_answer(sp.latex(result))
                 show_steps(
                     "Show Step-by-Step Solution",
                     [f"Apply {command} to {sp.latex(expr)}.", f"Result: {sp.latex(result)}"],
@@ -485,6 +594,7 @@ def handle_universal_query(raw_query: str):
                 result = matrix.rref()
                 st.subheader("Reduced Row Echelon Form")
             st.write(result)
+            record_solution_answer(str(result))
             show_steps(
                 "Show Step-by-Step Solution",
                 [f"Input matrix: {sp.latex(matrix)}", f"Apply the {operation} operation to the matrix."],
@@ -515,6 +625,9 @@ def handle_universal_query(raw_query: str):
             st.subheader("Statistics")
             for label, value in results.items():
                 st.write(f"**{label}:** {value}")
+            record_solution_answer(
+                "\n".join(f"{label}: {value}" for label, value in results.items())
+            )
             show_steps(
                 "Show Step-by-Step Solution",
                 [
@@ -536,6 +649,7 @@ def handle_universal_query(raw_query: str):
             result = sp.factorint(value)
             st.subheader("Prime Factorization")
             st.write(result)
+            record_solution_answer(str(result))
             show_steps(
                 "Show Step-by-Step Solution",
                 [f"Factor {value} into prime powers.", f"Prime factorization: {result}"],
@@ -555,6 +669,7 @@ def handle_universal_query(raw_query: str):
             result = sp.gcd(*numbers) if operation.lower() == "gcd" else sp.lcm(*numbers)
             st.subheader(operation.upper())
             st.write(result)
+            record_solution_answer(str(result))
             show_steps(
                 "Show Step-by-Step Solution",
                 [f"Apply {operation.upper()} to {numbers}.", f"Result: {result}"],
@@ -583,6 +698,7 @@ def handle_universal_query(raw_query: str):
             exprs.append(e)
             labels.append(f"y = {e}")
         render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
+        record_solution_answer(", ".join(labels))
         return
 
     # 5. Single equation
@@ -597,15 +713,25 @@ def handle_universal_query(raw_query: str):
             sols = sp.solve(eq, var)
             st.subheader("Equation Solution")
             st.latex(sp.latex(eq) + r" \implies " + sp.latex(var) + " = " + sp.latex(sols))
+            record_solution_answer(f"{sp.latex(var)} = {sp.latex(sols)}")
             moved = sp.expand(lhs - rhs)
             factored = sp.factor(moved)
+            steps = [
+                "Move all terms to the left-hand side and set the equation equal to zero.",
+                sp.latex(moved) + " = 0",
+                "Factor the left-hand side.",
+                sp.latex(factored) + " = 0",
+                "Set each factor equal to zero and solve for the variable.",
+                sp.latex(var) + " = " + sp.latex(sols),
+            ]
+            record_solution_steps(steps)
             with st.expander("Step-by-Step Explanation", expanded=True):
-                st.write("Move all terms to the left-hand side and set the equation equal to zero.")
-                st.latex(sp.latex(moved) + " = 0")
-                st.write("Factor the left-hand side.")
-                st.latex(sp.latex(factored) + " = 0")
-                st.write("Set each factor equal to zero and solve for the variable.")
-                st.latex(sp.latex(var) + " = " + sp.latex(sols))
+                st.write(steps[0])
+                st.latex(steps[1])
+                st.write(steps[2])
+                st.latex(steps[3])
+                st.write(steps[4])
+                st.latex(steps[5])
         except Exception:
             st.warning("Could not parse that equation.")
         return
@@ -618,15 +744,23 @@ def handle_universal_query(raw_query: str):
             res = sp.integrate(expr, x)
             st.subheader("Indefinite Integral")
             st.latex(r"\int \left(" + sp.latex(expr) + r"\right)\,dx = " + sp.latex(res) + " + C")
+            record_solution_answer(sp.latex(res) + " + C")
+            if isinstance(expr, sp.Add):
+                initial_step = "Use linearity to integrate each term separately."
+            elif isinstance(expr, sp.Pow) and expr.base == x:
+                initial_step = "Apply the power antiderivative rule: increase the exponent by one, then divide by the new exponent."
+            else:
+                initial_step = "Apply the corresponding standard antiderivative rule to the expression."
+            steps = [
+                initial_step,
+                "Add the constant of integration, + C.",
+                r"\frac{d}{dx}\left(" + sp.latex(res) + r"\right) = " + sp.latex(sp.diff(res, x)),
+            ]
+            record_solution_steps(steps)
             with st.expander("Step-by-Step Explanation", expanded=True):
-                if isinstance(expr, sp.Add):
-                    st.write("Use linearity to integrate each term separately.")
-                elif isinstance(expr, sp.Pow) and expr.base == x:
-                    st.write("Apply the power antiderivative rule: increase the exponent by one, then divide by the new exponent.")
-                else:
-                    st.write("Apply the corresponding standard antiderivative rule to the expression.")
-                st.write("Add the constant of integration, + C.")
-                st.latex(r"\frac{d}{dx}\left(" + sp.latex(res) + r"\right) = " + sp.latex(sp.diff(res, x)))
+                st.write(steps[0])
+                st.write(steps[1])
+                st.latex(steps[2])
         except Exception:
             st.warning("Could not integrate that expression.")
         return
@@ -644,6 +778,10 @@ def handle_universal_query(raw_query: str):
             res = sp.limit(expr, x, pt)
             st.subheader("Limit Result")
             st.latex(r"\lim_{x \to " + sp.latex(pt) + r"} \left(" + sp.latex(expr) + r"\right) = " + sp.latex(res))
+            record_solution_answer(sp.latex(res))
+            record_solution_steps(
+                [rf"\lim_{{x \to {sp.latex(pt)}}} \left({sp.latex(expr)}\right) = {sp.latex(res)}"]
+            )
         except Exception:
             st.warning("Could not evaluate that limit.")
         return
@@ -652,8 +790,11 @@ def handle_universal_query(raw_query: str):
     if re.match(r"^factor\b", cleaned, re.I):
         try:
             expr = clean_and_parse(re.sub(r"^factor(?:\s+of)?\s*", "", cleaned, flags=re.I))
+            result = sp.factor(expr)
             st.subheader("Factored Form")
-            st.latex(sp.latex(expr) + " = " + sp.latex(sp.factor(expr)))
+            st.latex(sp.latex(expr) + " = " + sp.latex(result))
+            record_solution_answer(sp.latex(result))
+            record_solution_steps([sp.latex(expr) + " = " + sp.latex(result)])
         except Exception:
             st.warning("Could not factor that expression.")
         return
@@ -662,8 +803,11 @@ def handle_universal_query(raw_query: str):
     if re.match(r"^expand\b", cleaned, re.I):
         try:
             expr = clean_and_parse(re.sub(r"^expand(?:\s+of)?\s*", "", cleaned, flags=re.I))
+            result = sp.expand(expr)
             st.subheader("Expanded Form")
-            st.latex(sp.latex(expr) + " = " + sp.latex(sp.expand(expr)))
+            st.latex(sp.latex(expr) + " = " + sp.latex(result))
+            record_solution_answer(sp.latex(result))
+            record_solution_steps([sp.latex(expr) + " = " + sp.latex(result)])
         except Exception:
             st.warning("Could not expand that expression.")
         return
@@ -678,8 +822,11 @@ def handle_universal_query(raw_query: str):
             st.subheader("Derivative Results")
             st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
             st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))
+            record_solution_answer(sp.latex(d1))
+            steps = derivative_steps(expr, d1)
+            record_solution_steps(steps)
             with st.expander("Step-by-Step Explanation", expanded=True):
-                for step in derivative_steps(expr, d1):
+                for step in steps:
                     st.write(step)
         except Exception:
             st.warning("Could not differentiate that expression.")
@@ -692,9 +839,12 @@ def handle_universal_query(raw_query: str):
         simplified = sp.simplify(expr)
         st.subheader("Result")
         st.latex(sp.latex(expr) + " = " + sp.latex(simplified))
+        record_solution_answer(sp.latex(simplified))
         if not simplified.free_symbols:
+            steps = arithmetic_steps(arith_query)
+            record_solution_steps(steps)
             with st.expander("Step-by-Step Explanation", expanded=True):
-                for step in arithmetic_steps(arith_query):
+                for step in steps:
                     st.write(step)
         if not simplified.free_symbols:
             try:
@@ -709,7 +859,110 @@ def set_example_query(query: str):
     st.session_state["query_input"] = query
 
 
+def extract_math_text(image_file):
+    try:
+        image_file.seek(0)
+        image = Image.open(image_file).convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
+        st.error(f"Could not read the selected image: {exc}")
+        return
+
+    try:
+        extracted_text = pytesseract.image_to_string(image, config="--psm 6").strip()
+    except pytesseract.TesseractNotFoundError:
+        st.error("Tesseract OCR is unavailable. Install the tesseract-ocr system package.")
+        return
+    except pytesseract.TesseractError as exc:
+        st.error(f"OCR could not process this image: {exc}")
+        return
+
+    extracted_text = re.sub(r"\s+", " ", extracted_text)
+    if not extracted_text:
+        st.warning("No math text was detected. Try a clearer, well-lit image.")
+        return
+
+    st.session_state["query_input"] = extracted_text
+    st.success("Text extracted. Review or edit it in the query box below.")
+
+
 st.sidebar.title("Math Reference Guide")
+themes = {
+    "Midnight Dark": {
+        "background": "#10131d",
+        "foreground": "#e8ecf5",
+        "surface": "#1b2232",
+        "accent": "#91a7ff",
+    },
+    "Clean Light": {
+        "background": "#f7f8fb",
+        "foreground": "#202536",
+        "surface": "#ffffff",
+        "accent": "#3157a4",
+    },
+    "Matrix Green": {
+        "background": "#06120b",
+        "foreground": "#c7f9cc",
+        "surface": "#102318",
+        "accent": "#50fa7b",
+    },
+    "Ocean Blue": {
+        "background": "#071a2c",
+        "foreground": "#d9f0ff",
+        "surface": "#12304a",
+        "accent": "#62c6f2",
+    },
+}
+selected_theme = st.sidebar.selectbox("Color theme", list(themes))
+theme_colors = themes[selected_theme]
+st.markdown(
+    f"""
+    <style>
+    .stApp, [data-testid="stSidebar"] {{
+        background-color: {theme_colors["background"]};
+        color: {theme_colors["foreground"]};
+    }}
+    h1, h2, h3, label {{
+        color: {theme_colors["accent"]} !important;
+    }}
+    .stTextInput input, .stTextArea textarea {{
+        background-color: {theme_colors["surface"]};
+        color: {theme_colors["foreground"]};
+        border-color: {theme_colors["accent"]};
+    }}
+    div[data-testid="stLatex"] {{
+        background-color: {theme_colors["surface"]};
+        border-radius: 0.5rem;
+        padding: 0.5rem;
+    }}
+    div[data-testid="stMarkdownContainer"] {{
+        color: {theme_colors["foreground"]};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.expander("Camera & Image Math Scanner"):
+    uploaded_math_image = st.file_uploader(
+        "Upload a PNG or JPG image",
+        type=["png", "jpg", "jpeg"],
+        key="math_image_upload",
+    )
+    camera_math_image = st.camera_input(
+        "Take a picture of an equation",
+        key="math_camera_input",
+    )
+    if uploaded_math_image and st.button(
+        "Extract text from uploaded image",
+        key="extract_uploaded_math",
+    ):
+        extract_math_text(uploaded_math_image)
+    if camera_math_image and st.button(
+        "Extract text from camera image",
+        key="extract_camera_math",
+    ):
+        extract_math_text(camera_math_image)
+
 reference_categories = {
     "Arithmetic & Units": [
         ("Arithmetic", "(5 + 6) * 5"),
