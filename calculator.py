@@ -4,6 +4,7 @@ import math
 import os
 import re
 import statistics
+import time
 from collections import Counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -487,6 +488,7 @@ def _agent_api_configuration():
 
 
 def _request_agent_completion(provider: str, api_key: str, conversation):
+    payload = None
     if provider == "openai":
         body = {
             "model": "gpt-4o-mini",
@@ -519,18 +521,55 @@ def _request_agent_completion(provider: str, api_key: str, conversation):
             ],
             "generationConfig": {"temperature": 0.1},
         }
-        request = Request(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "x-goog-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        models = ("gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-2.5-flash")
+        last_error = None
+        completed = False
+        for model_index, model in enumerate(models):
+            attempts = 2 if model_index == 0 else 1
+            for attempt in range(attempts):
+                request = Request(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={
+                        "x-goog-api-key": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                try:
+                    with urlopen(request, timeout=30) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    completed = True
+                    break
+                except HTTPError as exc:
+                    details = exc.read().decode("utf-8", errors="replace")[:500]
+                    last_error = RuntimeError(
+                        f"{provider.title()} API returned HTTP {exc.code}: {details}"
+                    )
+                    is_temporary = exc.code in (429, 503)
+                    if model_index == 0 and attempt == 0 and is_temporary:
+                        time.sleep(1)
+                        continue
+                    if is_temporary or (model_index > 0 and exc.code == 404):
+                        break
+                    raise last_error from exc
+                except (URLError, TimeoutError, OSError) as exc:
+                    raise RuntimeError(
+                        f"Could not reach the {provider.title()} API: {exc}"
+                    ) from exc
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"The {provider.title()} API returned an invalid response."
+                    ) from exc
+            if completed:
+                break
+        else:
+            raise last_error
+
     try:
-        with urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        if provider == "openai":
+            with urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")[:500]
         raise RuntimeError(f"{provider.title()} API returned HTTP {exc.code}: {details}") from exc
