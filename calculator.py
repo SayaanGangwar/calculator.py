@@ -226,7 +226,7 @@ def handle_universal_query(raw_query: str):
             exprs.append(e)
             labels.append(f"y = {e}")
         render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
-      return
+        return
 
     # 5. Calculus: Derivative
     deriv_match = re.match(r"^(?:derivative|differentiate|d/dx)\s+(?:of\s+)?(.+)$", cleaned, flags=re.IGNORECASE)
