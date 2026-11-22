@@ -616,13 +616,23 @@ def _translate_linear_word_problem(prompt: str):
 
 
 def _translate_system_word_problem(prompt: str):
-    match = re.fullmatch(
-        r"\s*if\s+(.+?)\s+then\s+(?:what is|calculate|compute|find)\s+(.+?)\s*[?.!]*\s*",
+    halves = re.split(
+        r"\b(?:then|what\s+is|find|calculate|compute)\b",
         prompt,
-        re.IGNORECASE,
+        maxsplit=1,
+        flags=re.IGNORECASE,
     )
-    if not match:
+    if len(halves) != 2:
         return None
+    equations_text, result_text = halves
+    equations_text = re.sub(r"^\s*if\s+", "", equations_text, flags=re.IGNORECASE)
+    result_text = result_text.strip().rstrip("?.!")
+    result_text = re.sub(
+        r"^(?:what\s+is|find|calculate|compute)\s+",
+        "",
+        result_text,
+        flags=re.IGNORECASE,
+    )
 
     def translate_expression(text):
         translated = text.strip().lower()
@@ -636,13 +646,16 @@ def _translate_system_word_problem(prompt: str):
         translated = re.sub(r"\bequals\b", "=", translated)
         return translated
 
-    equations_text, result_text = match.groups()
     equation_parts = re.split(
-        r"\s*,\s*(?:and\s+)?|\s+\band\b\s+",
+        r"\s*,\s*(?:and\b\s*)?|\s+\band\b(?:\s+|$)",
         equations_text,
         flags=re.IGNORECASE,
     )
-    equations = [translate_expression(part) for part in equation_parts]
+    equations = [
+        translate_expression(part)
+        for part in equation_parts
+        if "=" in part
+    ]
     if len(equations) < 2 or not all("=" in equation for equation in equations):
         return None
 
@@ -762,7 +775,12 @@ def _local_agent_response(prompt: str, conversation):
     if word_problem:
         system_text, result_text = word_problem
         equations = []
-        for equation_text in _split_top_level_commas(system_text):
+        equation_parts = [
+            part
+            for part in _split_top_level_commas(system_text)
+            if "=" in part
+        ]
+        for equation_text in equation_parts:
             left_text, right_text = equation_text.split("=", 1)
             equations.append(
                 sp.Eq(clean_and_parse(left_text), clean_and_parse(right_text))
@@ -787,12 +805,20 @@ def _local_agent_response(prompt: str, conversation):
             rendered_results = "; ".join(
                 sp.latex(result) for result in results
             )
+            rendered_solutions = "; ".join(
+                ", ".join(
+                    f"{variable} = {sp.sstr(value)}"
+                    for variable, value in solution.items()
+                )
+                for solution in solutions
+            )
             answer_text = (
                 f"1. Translate the equations: \\({sp.latex(equations[0])}\\)"
                 + "".join(
                     f", \\({sp.latex(equation)}\\)" for equation in equations[1:]
                 )
                 + f".\n\n2. Solve the system with SymPy: "
+                f"{rendered_solutions} "
                 f"\\({_agent_result_latex(solutions)}\\).\n\n"
                 f"3. Substitute into \\({sp.latex(expression)}\\): "
                 f"$$ {rendered_results} $$"
