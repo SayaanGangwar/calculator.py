@@ -55,6 +55,10 @@ def clean_and_parse(expr_str: str):
 
 def render_plot(expressions, labels, x_min=-10.0, x_max=10.0, points=None, title="Function Graph"):
     """Renders a clean Matplotlib chart in Streamlit."""
+    if x_max <= x_min:
+        st.warning("The plot range must have a maximum greater than its minimum.")
+        return
+
     fig, ax = plt.subplots(figsize=(8, 4.5))
     x_vals = np.linspace(x_min, x_max, 600)
 
@@ -159,32 +163,50 @@ def handle_universal_query(raw_query: str):
     q_lower = q.lower()
 
     # 1. Unit Conversion: "convert 100 km to miles"
-    conv_match = re.match(r"^(?:convert\s+)?([-+]?\d*\.?\d+)\s*([a-zA-Z/]+)\s+(?:to|in|into)\s+([a-zA-Z/]+)$", q_lower)
+    conv_match = re.match(
+        r"^(?:convert\s+)?([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*([a-zA-Z/]+)\s+(?:to|in|into)\s+([a-zA-Z/]+)$",
+        q_lower,
+    )
     if conv_match:
         val, u1, u2 = float(conv_match.group(1)), conv_match.group(2), conv_match.group(3)
         res = convert_units(val, u1, u2)
         if res is not None:
             st.success(f"**{val} {u1} = {res:.6g} {u2}**")
             return
+        st.warning("Those units are incompatible or not recognized.")
+        return
 
-    # 2. System of Equations separated by ';' or ',' (when '=' is present in both)
-    if ";" in q and "=" in q:
-        parts = [p.strip() for p in q.split(";") if p.strip()]
+    # 2. System of Equations separated by ';' or ','
+    if re.search(r"[;,]", q) and "=" in q:
+        parts = [p.strip() for p in re.split(r"[;,]", q) if p.strip()]
         eqs = []
         all_syms = set()
         for p in parts:
+            if "=" not in p:
+                eqs = []
+                break
             lhs, rhs = p.split("=", 1)
-            eq = sp.Eq(clean_and_parse(lhs), clean_and_parse(rhs))
-            eqs.append(eq)
-            all_syms.update(eq.free_symbols)
-        sol = sp.solve(eqs, list(all_syms), dict=True)
+            try:
+                eq = sp.Eq(clean_and_parse(lhs), clean_and_parse(rhs))
+                eqs.append(eq)
+                all_syms.update(eq.free_symbols)
+            except Exception:
+                eqs = []
+                break
+        if not eqs:
+            st.warning("Could not parse that system of equations.")
+            return
+        try:
+            sol = sp.solve(eqs, list(all_syms), dict=True)
+        except Exception:
+            st.warning("Could not solve that system.")
+            return
         st.subheader("System of Equations Solution")
         if not sol:
             st.warning("No solution found (parallel or inconsistent system).")
         else:
             for idx, s in enumerate(sol, 1):
                 st.latex(f"\\text{{Solution {idx}: }} " + ",\\quad ".join(f"{k} = {sp.latex(v)}" for k, v in s.items()))
-            # Plot if 2 equations in x and y
             if len(eqs) == 2 and x in all_syms and y in all_syms:
                 y_exprs, labels = [], []
                 for idx, eq in enumerate(eqs, 1):
@@ -194,13 +216,13 @@ def handle_universal_query(raw_query: str):
                         labels.append(f"Eq {idx}: y = {y_sol[0]}")
                 pts = []
                 for s in sol:
-                    if x in s and y in s and s[x].is_real and s[y].is_real:
+                    if x in s and y in s and s[x].is_real is True and s[y].is_real is True:
                         px, py = float(s[x].evalf()), float(s[y].evalf())
                         pts.append((px, py, f"({px:.3g}, {py:.3g})"))
                 x_center = pts[0][0] if pts else 0.0
                 render_plot(y_exprs, labels, x_center - 10, x_center + 10, pts, "System Intersection")
-        
-        return 
+        return
+
     # 3. Strip conversational prefixes
     cleaned = re.sub(
         r"^(what is|calculate|compute|solve|evaluate|find|simplify)\s+",
@@ -219,6 +241,9 @@ def handle_universal_query(raw_query: str):
         funcs_raw = graph_match.group(1).split(",")
         xmin = float(graph_match.group(2)) if graph_match.group(2) else -10.0
         xmax = float(graph_match.group(3)) if graph_match.group(3) else 10.0
+        if xmax <= xmin:
+            st.warning("The plot range must have a maximum greater than its minimum.")
+            return
         exprs, labels = [], []
         for f_str in funcs_raw:
             f_str = re.sub(r"^y\s*=\s*", "", f_str.strip(), flags=re.IGNORECASE)
@@ -227,69 +252,103 @@ def handle_universal_query(raw_query: str):
             labels.append(f"y = {e}")
         render_plot(exprs, labels, xmin, xmax, title="Interactive Function Graph")
         return
-        if "=" in cleaned:
-                lhs_str, rhs_str = cleaned.split("=", 1)
-                lhs, rhs = clean_and_parse(lhs_str), clean_and_parse(rhs_str)
-                eq = sp.Eq(lhs, rhs)
-                vars_in_eq = list(eq.free_symbols) or [x]
-                sols = sp.solve(eq, vars_in_eq[0])
-                st.subheader("Equation Solution")
-                st.latex(sp.latex(eq) + r" \implies " + sp.latex(vars_in_eq[0]) + " = " + sp.latex(sols))
-                return
 
-if re.match(r"^(?:integrate|integral|antiderivative)\b", cleaned, re.I):
+    # 5. Single equation
+    if "=" in cleaned:
+        lhs_str, rhs_str = cleaned.split("=", 1)
+        try:
+            lhs, rhs = clean_and_parse(lhs_str), clean_and_parse(rhs_str)
+            eq = sp.Eq(lhs, rhs)
+            vars_in_eq = list(eq.free_symbols)
+            preferred = [x, y, z, t, n]
+            var = next((v for v in preferred if v in vars_in_eq), vars_in_eq[0] if vars_in_eq else x)
+            sols = sp.solve(eq, var)
+            st.subheader("Equation Solution")
+            st.latex(sp.latex(eq) + r" \implies " + sp.latex(var) + " = " + sp.latex(sols))
+        except Exception:
+            st.warning("Could not parse that equation.")
+        return
+
+    # 6. Integral
+    if re.match(r"^(?:integrate|integral|antiderivative)\b", cleaned, re.I):
         target = re.sub(r"^(?:integrate|integral|antiderivative)(?:\s+of)?\s*", "", cleaned, flags=re.I)
-        expr = clean_and_parse(target)
-        res = sp.integrate(expr, x)
-        st.subheader("Indefinite Integral")
-        st.latex(r"\int \left(" + sp.latex(expr) + r"\right)\,dx = " + sp.latex(res) + " + C")
+        try:
+            expr = clean_and_parse(target)
+            res = sp.integrate(expr, x)
+            st.subheader("Indefinite Integral")
+            st.latex(r"\int \left(" + sp.latex(expr) + r"\right)\,dx = " + sp.latex(res) + " + C")
+        except Exception:
+            st.warning("Could not integrate that expression.")
         return
 
-lim_match = re.match(r"^limit\s+(.+?)\s+(?:as\s+)?x\s*(?:->|→|to)\s*(.+)$", cleaned, re.I)
-if lim_match:
-        expr = clean_and_parse(lim_match.group(1))
-        pt = clean_and_parse(lim_match.group(2).replace("infinity", "oo").replace("inf", "oo"))
-        res = sp.limit(expr, x, pt)
-        st.subheader("Limit Result")
-        st.latex(r"\lim_{x \to " + sp.latex(pt) + r"} \left(" + sp.latex(expr) + r"\right) = " + sp.latex(res))
+    # 7. Limit
+    lim_match = re.match(
+        r"^limit\s+(.+?)\s+(?:as\s+)?x\s*(?:->|→|to)\s*(.+)$",
+        cleaned,
+        re.I,
+    )
+    if lim_match:
+        try:
+            expr = clean_and_parse(lim_match.group(1))
+            pt = clean_and_parse(lim_match.group(2).replace("infinity", "oo").replace("inf", "oo"))
+            res = sp.limit(expr, x, pt)
+            st.subheader("Limit Result")
+            st.latex(r"\lim_{x \to " + sp.latex(pt) + r"} \left(" + sp.latex(expr) + r"\right) = " + sp.latex(res))
+        except Exception:
+            st.warning("Could not evaluate that limit.")
         return
 
-if re.match(r"^factor\b", cleaned, re.I):
-        expr = clean_and_parse(re.sub(r"^factor(?:\s+of)?\s*", "", cleaned, flags=re.I))
-        st.subheader("Factored Form")
-        st.latex(sp.latex(expr) + " = " + sp.latex(sp.factor(expr)))
+    # 8. Factor
+    if re.match(r"^factor\b", cleaned, re.I):
+        try:
+            expr = clean_and_parse(re.sub(r"^factor(?:\s+of)?\s*", "", cleaned, flags=re.I))
+            st.subheader("Factored Form")
+            st.latex(sp.latex(expr) + " = " + sp.latex(sp.factor(expr)))
+        except Exception:
+            st.warning("Could not factor that expression.")
         return
 
-if re.match(r"^expand\b", cleaned, re.I):
-        expr = clean_and_parse(re.sub(r"^expand(?:\s+of)?\s*", "", cleaned, flags=re.I))
-        st.subheader("Expanded Form")
-        st.latex(sp.latex(expr) + " = " + sp.latex(sp.expand(expr)))
+    # 9. Expand
+    if re.match(r"^expand\b", cleaned, re.I):
+        try:
+            expr = clean_and_parse(re.sub(r"^expand(?:\s+of)?\s*", "", cleaned, flags=re.I))
+            st.subheader("Expanded Form")
+            st.latex(sp.latex(expr) + " = " + sp.latex(sp.expand(expr)))
+        except Exception:
+            st.warning("Could not expand that expression.")
         return
 
-     # 5. Calculus: Derivative
+    # 10. Derivative
     deriv_match = re.match(r"^(?:derivative|differentiate|d/dx)\s+(?:of\s+)?(.+)$", cleaned, flags=re.IGNORECASE)
     if deriv_match:
-        expr = clean_and_parse(deriv_match.group(1))
-        d1 = sp.diff(expr, x)
-        d2 = sp.diff(expr, x, 2)
-        st.subheader("Derivative Results")
-        st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
-        st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))
+        try:
+            expr = clean_and_parse(deriv_match.group(1))
+            d1 = sp.diff(expr, x)
+            d2 = sp.diff(expr, x, 2)
+            st.subheader("Derivative Results")
+            st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
+            st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))
+        except Exception:
+            st.warning("Could not differentiate that expression.")
         return
 
-    # 6. General Evaluation / Fallback
+    # 11. General Evaluation / Fallback
     try:
-        arith_query = re.sub(r'(?<=[0-9\)])\s*[xX×]\s*(?=[0-9\(])', '*', cleaned)
+        arith_query = re.sub(r"(?<=[0-9)])\s*[xX×]\s*(?=[0-9(])", "*", cleaned)
         expr = clean_and_parse(arith_query)
         simplified = sp.simplify(expr)
         st.subheader("Result")
         st.latex(sp.latex(expr) + " = " + sp.latex(simplified))
         if not simplified.free_symbols:
-            st.write(f"**Decimal:** `{float(simplified.evalf()):g}`")
+            try:
+                decimal_value = complex(simplified.evalf())
+                st.write(f"**Decimal:** `{decimal_value:g}`")
+            except (TypeError, ValueError, OverflowError):
+                st.write(f"**Exact value:** `{sp.latex(simplified)}`")
     except Exception:
         st.warning("Could not parse that expression. Try `(5 + 6) * 5` or `derivative of x^3`.")
 
-st.title ("OmniMath Calculator")
+st.title("OmniMath Calculator")
 user_input = st.text_input("Enter a math expression or query (e.g., the derivative of x^3:")
 
 if user_input:
