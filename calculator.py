@@ -707,103 +707,121 @@ def _agent_api_configuration():
 
 
 def _request_agent_completion(provider: str, api_key: str, conversation):
-    payload = None
-    if provider == "openai":
-        body = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": AI_AGENT_SYSTEM_PROMPT},
-                *[
-                    {
-                        "role": "assistant" if message["role"] == "assistant" else "user",
-                        "content": message["content"],
-                    }
-                    for message in conversation
-                ],
-            ],
-        }
-        request = Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-    else:
-        body = {
-            "systemInstruction": {"parts": [{"text": AI_AGENT_SYSTEM_PROMPT}]},
-            "contents": [
+    if provider == "gemini":
+        import httpx
+        from google import genai
+        from google.genai import types
+        from google.genai.errors import APIError
+
+        def stream_response():
+            try:
+                with genai.Client(
+                    api_key=api_key,
+                    http_options=types.HttpOptions(
+                        timeout=4000,
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    ),
+                ) as client:
+                    contents = [
+                        {
+                            "role": "model" if message["role"] == "assistant" else "user",
+                            "parts": [{"text": message["content"]}],
+                        }
+                        for message in conversation
+                    ]
+                    response_stream = client.models.generate_content_stream(
+                        model="gemini-2.5-flash",
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=AI_AGENT_SYSTEM_PROMPT,
+                            temperature=0.1,
+                            automatic_continuation=False,
+                        ),
+                    )
+                    for chunk in response_stream:
+                        if chunk.text:
+                            yield chunk.text
+            except (APIError, httpx.TransportError) as exc:
+                raise RuntimeError(f"Gemini API request failed: {exc}") from exc
+
+        return stream_response()
+
+    body = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": AI_AGENT_SYSTEM_PROMPT},
+            *[
                 {
-                    "role": "model" if message["role"] == "assistant" else "user",
-                    "parts": [{"text": message["content"]}],
+                    "role": "assistant" if message["role"] == "assistant" else "user",
+                    "content": message["content"],
                 }
                 for message in conversation
             ],
-            "generationConfig": {"temperature": 0.1},
-        }
-        models = ("gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-2.5-flash")
-        last_error = None
-        completed = False
-        for model_index, model in enumerate(models):
-            attempts = 2 if model_index == 0 else 1
-            for attempt in range(attempts):
-                request = Request(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    data=json.dumps(body).encode("utf-8"),
-                    headers={
-                        "x-goog-api-key": api_key,
-                        "Content-Type": "application/json",
-                    },
-                    method="POST",
-                )
-                try:
-                    with urlopen(request, timeout=20) as response:
-                        payload = json.loads(response.read().decode("utf-8"))
-                    completed = True
-                    break
-                except HTTPError as exc:
-                    details = exc.read().decode("utf-8", errors="replace")[:500]
-                    last_error = RuntimeError(
-                        f"{provider.title()} API returned HTTP {exc.code}: {details}"
-                    )
-                    is_temporary = exc.code in (429, 503)
-                    if model_index == 0 and attempt == 0 and is_temporary:
-                        time.sleep(1)
-                        continue
-                    if is_temporary or exc.code == 404:
-                        break
-                    raise last_error from exc
-                except (URLError, TimeoutError, OSError) as exc:
-                    last_error = RuntimeError(
-                        f"Could not reach the {provider.title()} API: {exc}"
-                    )
-                    break
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise RuntimeError(
-                        f"The {provider.title()} API returned an invalid response."
-                    ) from exc
-            if completed:
-                break
-        else:
-            raise last_error
-
+        ],
+    }
+    request = Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        if provider == "openai":
-            with urlopen(request, timeout=30) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"{provider.title()} API returned HTTP {exc.code}: {details}") from exc
+        raise RuntimeError(f"OpenAI API returned HTTP {exc.code}: {details}") from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"Could not reach the {provider.title()} API: {exc}") from exc
+        raise RuntimeError(f"Could not reach the OpenAI API: {exc}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"The {provider.title()} API returned an invalid response.") from exc
+        raise RuntimeError("The OpenAI API returned an invalid response.") from exc
 
     try:
-        if provider == "openai":
-            return payload["choices"][0]["message"]["content"]
-        return payload["candidates"][0]["content"]["parts"][0]["text"]
+        return payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"The {provider.title()} API response did not contain a message.") from exc
+        raise RuntimeError("The OpenAI API response did not contain a message.") from exc
+
+
+def _agent_visible_response_chunks(chunks, raw_chunks):
+    opening_tag = "<sympy>"
+    closing_tag = "</sympy>"
+    buffer = ""
+    inside_tag = False
+
+    for chunk in chunks:
+        raw_chunks.append(chunk)
+        buffer += chunk
+        while buffer:
+            lowered_buffer = buffer.lower()
+            if inside_tag:
+                closing_index = lowered_buffer.find(closing_tag)
+                if closing_index < 0:
+                    buffer = buffer[-(len(closing_tag) - 1):]
+                    break
+                buffer = buffer[closing_index + len(closing_tag):]
+                inside_tag = False
+                continue
+
+            opening_index = lowered_buffer.find(opening_tag)
+            if opening_index >= 0:
+                if opening_index:
+                    yield buffer[:opening_index]
+                buffer = buffer[opening_index + len(opening_tag):]
+                inside_tag = True
+                continue
+
+            partial_tag_length = 0
+            for length in range(1, min(len(buffer), len(opening_tag) - 1) + 1):
+                if opening_tag.startswith(buffer[-length:].lower()):
+                    partial_tag_length = length
+            ready_length = len(buffer) - partial_tag_length
+            if ready_length:
+                yield buffer[:ready_length]
+                buffer = buffer[ready_length:]
+            break
+
+    if not inside_tag and buffer:
+        yield buffer
 
 
 def _translate_linear_word_problem(prompt: str):
@@ -1096,14 +1114,25 @@ def _local_agent_response(prompt: str, conversation):
     return answer_text, target, send_expression
 
 
-def _generate_agent_response(prompt: str, conversation):
+def _generate_agent_response(prompt: str, conversation, stream_writer=None):
     provider, api_key = _agent_api_configuration()
     if not api_key:
         answer, target, send_expression = _local_agent_response(prompt, conversation)
         return answer, target, send_expression, "Local SymPy"
 
     try:
-        raw_response = _request_agent_completion(provider, api_key, conversation)
+        completion = _request_agent_completion(provider, api_key, conversation)
+        if provider == "gemini":
+            raw_chunks = []
+            if stream_writer:
+                stream_writer(
+                    _agent_visible_response_chunks(completion, raw_chunks)
+                )
+            else:
+                raw_chunks.extend(completion)
+            raw_response = "".join(raw_chunks)
+        else:
+            raw_response = completion
     except RuntimeError:
         answer, target, send_expression = _local_agent_response(prompt, conversation)
         return answer, target, send_expression, "Local SymPy"
@@ -1164,28 +1193,42 @@ def render_ai_math_agent():
     conversation.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
-    try:
-        answer, target, send_expression, mode = _generate_agent_response(
-            prompt, conversation
-        )
-    except (RuntimeError, ValueError, TypeError, SyntaxError, NameError, ZeroDivisionError) as exc:
-        answer = f"I couldn't solve that request: {exc}"
-        target = send_expression = None
-        mode = "SymPy"
-    st.session_state["ai_chat"].append(
-        {
-            "role": "assistant",
-            "content": answer,
-            "send_expression": send_expression,
-            "target": target,
-            "graph_expression": (
-                send_expression if target == "graph" else None
-            ),
-            "mode": mode,
-        }
-    )
+    streamed_text = []
     with st.chat_message("assistant"):
-        st.markdown(answer)
+        try:
+            answer, target, send_expression, mode = _generate_agent_response(
+                prompt,
+                conversation,
+                lambda chunks: streamed_text.append(st.write_stream(chunks)),
+            )
+        except (
+            RuntimeError,
+            ValueError,
+            TypeError,
+            SyntaxError,
+            NameError,
+            ZeroDivisionError,
+        ) as exc:
+            answer = f"I couldn't solve that request: {exc}"
+            target = send_expression = None
+            mode = "SymPy"
+        st.session_state["ai_chat"].append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "send_expression": send_expression,
+                "target": target,
+                "graph_expression": (
+                    send_expression if target == "graph" else None
+                ),
+                "mode": mode,
+            }
+        )
+        visible_response = streamed_text[0].strip() if streamed_text else ""
+        if visible_response and answer.startswith(visible_response):
+            st.markdown(answer[len(visible_response):])
+        else:
+            st.markdown(answer)
         st.caption(f"Answered with {mode}.")
         if send_expression:
             st.button(
