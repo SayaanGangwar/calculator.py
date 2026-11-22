@@ -1,5 +1,8 @@
+import ast
 import re
 import math
+import statistics
+from collections import Counter
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
@@ -51,6 +54,67 @@ def clean_and_parse(expr_str: str):
         expr_str,
     )
     return parse_expr(expr_str, local_dict=LOCAL_DICT, transformations=TRANSFORMATIONS)
+
+
+def show_steps(title: str, steps):
+    with st.expander(title):
+        for step in steps:
+            st.write(step)
+
+
+def derivative_steps(expr, derivative):
+    if isinstance(expr, sp.Add):
+        steps = ["Sum rule: differentiate each term, then add the results."]
+        for term in expr.args:
+            steps.extend(derivative_steps(term, sp.diff(term, x)))
+        return steps
+    elif isinstance(expr, sp.Mul) and len(expr.args) > 1:
+        rule = "Product rule: differentiate one factor at a time and sum the products."
+    elif isinstance(expr, sp.Pow) and expr.base.has(x):
+        if expr.exp.has(x):
+            rule = "Use logarithmic differentiation because both the base and exponent depend on x."
+        else:
+            rule = "Power rule: multiply by the exponent and reduce the exponent by one."
+    elif any(arg.has(x) and arg != x for arg in expr.args):
+        rule = "Chain rule: differentiate the outer function, then multiply by the inner derivative."
+    elif derivative == 0:
+        rule = "Constant rule: the derivative of a constant is zero."
+    else:
+        rule = "Apply the derivative rule for this expression."
+    return [rule, f"Intermediate derivative: {sp.latex(derivative)}"]
+
+
+def arithmetic_steps(expression):
+    unevaluated = parse_expr(
+        expression,
+        local_dict=LOCAL_DICT,
+        transformations=TRANSFORMATIONS,
+        evaluate=False,
+    )
+    steps = ["Apply parentheses first, then exponents, multiplication/division, and addition/subtraction."]
+    operations = []
+
+    def collect(node):
+        for child in node.args:
+            collect(child)
+        if isinstance(node, (sp.Add, sp.Mul, sp.Pow)) and not node.free_symbols:
+            operations.append(node)
+
+    collect(unevaluated)
+    for operation in operations:
+        steps.append(f"{sp.latex(operation)} = {sp.latex(sp.simplify(operation))}")
+    return steps
+
+
+def parse_ode_expression(text: str):
+    function = sp.Function("y")
+    text = re.sub(r"\by''", "__Y_SECOND_DERIVATIVE__", text)
+    text = re.sub(r"\by'", "__Y_FIRST_DERIVATIVE__", text)
+    text = re.sub(r"\by\b(?!\s*\()", "y(x)", text)
+    text = text.replace("__Y_SECOND_DERIVATIVE__", "Derivative(y(x), (x, 2))")
+    text = text.replace("__Y_FIRST_DERIVATIVE__", "Derivative(y(x), x)")
+    local_dict = {**LOCAL_DICT, "y": function, "Derivative": sp.Derivative}
+    return parse_expr(text, local_dict=local_dict, transformations=TRANSFORMATIONS)
 
 
 def render_plot(expressions, labels, x_min=-10.0, x_max=10.0, points=None, title="Function Graph"):
@@ -207,6 +271,13 @@ def handle_universal_query(raw_query: str):
         else:
             for idx, s in enumerate(sol, 1):
                 st.latex(f"\\text{{Solution {idx}: }} " + ",\\quad ".join(f"{k} = {sp.latex(v)}" for k, v in s.items()))
+            show_steps(
+                "Show Step-by-Step Solution",
+                [
+                    "Write each equation in the system and solve them simultaneously.",
+                    "Substitute the solution values into the original equations to verify them.",
+                ],
+            )
             if len(eqs) == 2 and x in all_syms and y in all_syms:
                 y_exprs, labels = [], []
                 for idx, eq in enumerate(eqs, 1):
@@ -230,6 +301,200 @@ def handle_universal_query(raw_query: str):
         q,
         flags=re.IGNORECASE,
     ).strip().rstrip("?")
+
+    # 4. Differential equations
+    ode_text = re.sub(r"^ode\b\s*", "", cleaned, flags=re.IGNORECASE)
+    if re.match(r"^ode\b", cleaned, re.IGNORECASE) or re.search(r"\by'{1,2}", cleaned):
+        if "=" not in ode_text:
+            st.warning("Enter an ODE as an equation, for example `ode y' = y`.")
+            return
+        try:
+            lhs_text, rhs_text = ode_text.split("=", 1)
+            eq = sp.Eq(parse_ode_expression(lhs_text), parse_ode_expression(rhs_text))
+            solution = sp.dsolve(eq)
+            st.subheader("Differential Equation Solution")
+            st.latex(sp.latex(solution))
+            show_steps(
+                "Show Step-by-Step Solution",
+                [
+                    "Interpret y' and y'' as derivatives of y(x) with respect to x.",
+                    f"Solve the differential equation {sp.latex(eq)} using SymPy's dsolve.",
+                    f"General solution: {sp.latex(solution)}",
+                ],
+            )
+        except Exception:
+            st.warning("Could not solve that differential equation.")
+        return
+
+    # 5. Taylor / Maclaurin series
+    series_match = re.match(
+        r"^(?:series|taylor|maclaurin)\s+(.+?)(?:\s+around\s+(.+?))?(?:\s+to\s+order\s+(\d+))?$",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if series_match:
+        try:
+            expr = clean_and_parse(series_match.group(1))
+            center = clean_and_parse(series_match.group(2)) if series_match.group(2) else sp.Integer(0)
+            order = int(series_match.group(3)) if series_match.group(3) else 6
+            result = sp.series(expr, x, center, order)
+            st.subheader("Taylor Series")
+            st.latex(sp.latex(result))
+            show_steps(
+                "Show Step-by-Step Solution",
+                [
+                    f"Expand {sp.latex(expr)} around x = {sp.latex(center)} through order {order - 1}.",
+                    f"Series expansion: {sp.latex(result)}",
+                ],
+            )
+        except Exception:
+            st.warning("Could not expand that expression as a series.")
+        return
+
+    # 6. Summation
+    sum_match = re.match(
+        r"^sum\s+(.+?)\s+from\s+(.+?)\s+to\s+(.+)$",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if sum_match:
+        try:
+            expr = clean_and_parse(sum_match.group(1))
+            index = n if n in expr.free_symbols else next(iter(expr.free_symbols), n)
+            lower = clean_and_parse(sum_match.group(2))
+            upper_text = re.sub(r"\b(?:infinity|inf)\b", "oo", sum_match.group(3), flags=re.IGNORECASE)
+            upper = clean_and_parse(upper_text)
+            result = sp.summation(expr, (index, lower, upper))
+            st.subheader("Summation")
+            st.latex(sp.latex(result))
+            show_steps(
+                "Show Step-by-Step Solution",
+                [
+                    f"Sum {sp.latex(expr)} over {sp.latex(index)} from {sp.latex(lower)} to {sp.latex(upper)}.",
+                    f"Evaluated sum: {sp.latex(result)}",
+                ],
+            )
+        except Exception:
+            st.warning("Could not evaluate that summation.")
+        return
+
+    # 7. Partial fractions and trigonometric simplification
+    for command, operation, heading in (
+        ("apart", sp.apart, "Partial Fractions"),
+        ("trigsimp", sp.trigsimp, "Trigonometric Simplification"),
+    ):
+        if re.match(rf"^{command}\b", cleaned, re.IGNORECASE):
+            try:
+                expr = clean_and_parse(re.sub(rf"^{command}\s*", "", cleaned, flags=re.IGNORECASE))
+                result = operation(expr)
+                st.subheader(heading)
+                st.latex(sp.latex(expr) + " = " + sp.latex(result))
+                show_steps(
+                    "Show Step-by-Step Solution",
+                    [f"Apply {command} to {sp.latex(expr)}.", f"Result: {sp.latex(result)}"],
+                )
+            except Exception:
+                st.warning(f"Could not perform {command} on that expression.")
+            return
+
+    # 8. Matrix operations
+    matrix_match = re.match(r"^(det|inv|eigen|rref)\s+(.+)$", cleaned, re.IGNORECASE)
+    if matrix_match:
+        operation, matrix_text = matrix_match.groups()
+        try:
+            rows = ast.literal_eval(matrix_text)
+            matrix = sp.Matrix(rows)
+            operation = operation.lower()
+            if operation == "det":
+                result = matrix.det()
+                st.subheader("Matrix Determinant")
+            elif operation == "inv":
+                result = matrix.inv()
+                st.subheader("Matrix Inverse")
+            elif operation == "eigen":
+                result = matrix.eigenvects()
+                st.subheader("Matrix Eigenvalues and Eigenvectors")
+            else:
+                result = matrix.rref()
+                st.subheader("Reduced Row Echelon Form")
+            st.write(result)
+            show_steps(
+                "Show Step-by-Step Solution",
+                [f"Input matrix: {sp.latex(matrix)}", f"Apply the {operation} operation to the matrix."],
+            )
+        except (ValueError, TypeError, SyntaxError, sp.matrices.exceptions.NonInvertibleMatrixError):
+            st.warning("Could not perform that matrix operation. Check the matrix format and operation.")
+        return
+
+    # 9. Descriptive statistics
+    if re.match(r"^stats\b", cleaned, re.IGNORECASE):
+        try:
+            values = [float(value.strip()) for value in re.sub(r"^stats\s*", "", cleaned, flags=re.IGNORECASE).split(",")]
+            if not values:
+                raise ValueError("At least one value is required.")
+            modes = statistics.multimode(values)
+            frequencies = Counter(values)
+            if max(frequencies.values()) == 1:
+                mode_text = "No mode"
+            else:
+                mode_text = ", ".join(str(value) for value in modes)
+            results = {
+                "Mean": statistics.mean(values),
+                "Median": statistics.median(values),
+                "Mode": mode_text,
+                "Population variance": statistics.pvariance(values),
+                "Population standard deviation": statistics.pstdev(values),
+            }
+            st.subheader("Statistics")
+            for label, value in results.items():
+                st.write(f"**{label}:** {value}")
+            show_steps(
+                "Show Step-by-Step Solution",
+                [
+                    f"Calculate the mean, median, mode, population variance, and population standard deviation for {values}.",
+                    "Population variance and standard deviation use the full supplied data set.",
+                ],
+            )
+        except (ValueError, statistics.StatisticsError):
+            st.warning("Enter one or more comma-separated numbers after `stats`.")
+        return
+
+    # 10. Number theory
+    if re.match(r"^prime\s+factors?\b", cleaned, re.IGNORECASE):
+        try:
+            parsed_value = clean_and_parse(re.sub(r"^prime\s+factors?\s*", "", cleaned, flags=re.IGNORECASE))
+            if not parsed_value.is_Integer:
+                raise ValueError("An integer is required.")
+            value = int(parsed_value)
+            result = sp.factorint(value)
+            st.subheader("Prime Factorization")
+            st.write(result)
+            show_steps(
+                "Show Step-by-Step Solution",
+                [f"Factor {value} into prime powers.", f"Prime factorization: {result}"],
+            )
+        except (ValueError, TypeError):
+            st.warning("Enter an integer to factor, for example `prime factors 360`.")
+        return
+
+    number_match = re.match(r"^(gcd|lcm)\s+(.+)$", cleaned, re.IGNORECASE)
+    if number_match:
+        operation, numbers_text = number_match.groups()
+        try:
+            parsed_numbers = [clean_and_parse(value.strip()) for value in numbers_text.split(",")]
+            if any(not value.is_Integer for value in parsed_numbers):
+                raise ValueError("Integers are required.")
+            numbers = [int(value) for value in parsed_numbers]
+            result = sp.gcd(*numbers) if operation.lower() == "gcd" else sp.lcm(*numbers)
+            st.subheader(operation.upper())
+            st.write(result)
+            show_steps(
+                "Show Step-by-Step Solution",
+                [f"Apply {operation.upper()} to {numbers}.", f"Result: {result}"],
+            )
+        except (ValueError, TypeError):
+            st.warning(f"Enter comma-separated integers after `{operation}`, for example `{operation} 12, 18`.")
+        return
 
     # 4. Graph command: "graph sin(x) from -10 to 10"
     graph_match = re.match(
@@ -265,6 +530,15 @@ def handle_universal_query(raw_query: str):
             sols = sp.solve(eq, var)
             st.subheader("Equation Solution")
             st.latex(sp.latex(eq) + r" \implies " + sp.latex(var) + " = " + sp.latex(sols))
+            moved = sp.expand(lhs - rhs)
+            factored = sp.factor(moved)
+            with st.expander("Step-by-Step Explanation", expanded=True):
+                st.write("Move all terms to the left-hand side and set the equation equal to zero.")
+                st.latex(sp.latex(moved) + " = 0")
+                st.write("Factor the left-hand side.")
+                st.latex(sp.latex(factored) + " = 0")
+                st.write("Set each factor equal to zero and solve for the variable.")
+                st.latex(sp.latex(var) + " = " + sp.latex(sols))
         except Exception:
             st.warning("Could not parse that equation.")
         return
@@ -277,6 +551,15 @@ def handle_universal_query(raw_query: str):
             res = sp.integrate(expr, x)
             st.subheader("Indefinite Integral")
             st.latex(r"\int \left(" + sp.latex(expr) + r"\right)\,dx = " + sp.latex(res) + " + C")
+            with st.expander("Step-by-Step Explanation", expanded=True):
+                if isinstance(expr, sp.Add):
+                    st.write("Use linearity to integrate each term separately.")
+                elif isinstance(expr, sp.Pow) and expr.base == x:
+                    st.write("Apply the power antiderivative rule: increase the exponent by one, then divide by the new exponent.")
+                else:
+                    st.write("Apply the corresponding standard antiderivative rule to the expression.")
+                st.write("Add the constant of integration, + C.")
+                st.latex(r"\frac{d}{dx}\left(" + sp.latex(res) + r"\right) = " + sp.latex(sp.diff(res, x)))
         except Exception:
             st.warning("Could not integrate that expression.")
         return
@@ -328,6 +611,9 @@ def handle_universal_query(raw_query: str):
             st.subheader("Derivative Results")
             st.latex(r"\frac{d}{dx}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d1))
             st.latex(r"\frac{d^2}{dx^2}\left(" + sp.latex(expr) + r"\right) = " + sp.latex(d2))
+            with st.expander("Step-by-Step Explanation", expanded=True):
+                for step in derivative_steps(expr, d1):
+                    st.write(step)
         except Exception:
             st.warning("Could not differentiate that expression.")
         return
@@ -340,6 +626,10 @@ def handle_universal_query(raw_query: str):
         st.subheader("Result")
         st.latex(sp.latex(expr) + " = " + sp.latex(simplified))
         if not simplified.free_symbols:
+            with st.expander("Step-by-Step Explanation", expanded=True):
+                for step in arithmetic_steps(arith_query):
+                    st.write(step)
+        if not simplified.free_symbols:
             try:
                 decimal_value = complex(simplified.evalf())
                 st.write(f"**Decimal:** `{decimal_value:g}`")
@@ -348,8 +638,63 @@ def handle_universal_query(raw_query: str):
     except Exception:
         st.warning("Could not parse that expression. Try `(5 + 6) * 5` or `derivative of x^3`.")
 
+def set_example_query(query: str):
+    st.session_state["query_input"] = query
+
+
+st.sidebar.title("Math Reference Guide")
+reference_categories = {
+    "Arithmetic & Units": [
+        ("Arithmetic", "(5 + 6) * 5"),
+        ("Unit conversion", "convert 100 km to miles"),
+    ],
+    "Algebra & Equations": [
+        ("Solve an equation", "3(x + 2) = 5x - 4"),
+        ("Systems of equations", "x + y = 10, x - y = 2"),
+        ("Factor", "factor x^2 - 9"),
+        ("Expand", "expand (x + 2)^2"),
+    ],
+    "Calculus": [
+        ("Derivative", "derivative of x^3 + 2x"),
+        ("Integral", "integrate x^2"),
+        ("Limit", "limit sin(x)/x as x -> 0"),
+        ("ODE", "ode y' = y"),
+    ],
+    "Series & Sums": [
+        ("Taylor series", "series sin(x)"),
+        ("Summation", "sum 1/n^2 from 1 to oo"),
+    ],
+    "Expression Tools": [
+        ("Partial fractions", "apart (x^2 + 1)/(x*(x + 1))"),
+        ("Trig simplification", "trigsimp sin(x)^2 + cos(x)^2"),
+        ("Graph", "graph sin(x) from -10 to 10"),
+    ],
+    "Matrices, Statistics & Number Theory": [
+        ("Determinant", "det [[1,2],[3,4]]"),
+        ("Inverse", "inv [[1,2],[3,4]]"),
+        ("Eigenvalues and vectors", "eigen [[1,2],[3,4]]"),
+        ("RREF", "rref [[1,2,3],[4,5,6]]"),
+        ("Statistics", "stats 10, 20, 30, 40"),
+        ("Prime factors", "prime factors 360"),
+        ("GCD", "gcd 48, 180"),
+        ("LCM", "lcm 12, 15"),
+    ],
+}
+for category, examples in reference_categories.items():
+    with st.sidebar.expander(category):
+        for label, query in examples:
+            st.button(
+                label,
+                key=f"example_{category}_{label}",
+                on_click=set_example_query,
+                args=(query,),
+            )
+
 st.title("OmniMath Calculator")
-user_input = st.text_input("Enter a math expression or query (e.g., the derivative of x^3:")
+user_input = st.text_input(
+    "Enter a math expression or query (e.g., derivative of x^3):",
+    key="query_input",
+)
 
 if user_input:
     handle_universal_query(user_input)
