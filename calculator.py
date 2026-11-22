@@ -302,13 +302,23 @@ def parse_homework_expression(text: str):
 
 AI_AGENT_SYSTEM_PROMPT = """You are OmniMath's math tutor. Interpret the user's natural-language
 math question, translate it into exact mathematics, and explain the solution in clear,
-numbered steps. Use LaTeX delimited by $$...$$ for important equations. End every
-solvable math answer with exactly one <sympy>...</sympy> tag. The tag must contain
-only a SymPy-compatible expression, equation, or supported call such as
-diff(x**3 + 2*x, x); never put prose or code in it. For equations, include the
-equation (for example 2*x + 5 = 15), not a guessed solution. Ask a concise follow-up
-question without a tag if essential information is missing. Use earlier turns to
-resolve follow-up references, but do not claim SymPy verified anything yourself."""
+numbered steps that a student can follow. Show the actual arithmetic and algebra using
+the exact numbers from the user's problem; explain each operation in plain language
+instead of saying to solve with a tool. For systems, show the equations, each
+elimination or substitution, the arithmetic used to find every variable, then
+substitute those values into the requested expression and simplify it before stating
+the answer. For example, show steps like "Add the equations: (x + y) + (x - y) =
+10 + 4 -> 2x = 14", "Divide both sides by 2: x = 14 / 2 = 7", "Plug x = 7 into
+x + y = 10: 7 + y = 10 -> y = 3", and "Substitute x = 7 and y = 3 into (xy)^2:
+(7 × 3)^2 = 21^2 = 441". Do not show raw LaTeX solution-set notation or refer to
+SymPy as the solver in the explanation. Use LaTeX delimited by $$...$$ for important
+equations. End every solvable math answer with exactly one <sympy>...</sympy> tag.
+The tag must contain only a SymPy-compatible expression, equation, or supported call
+such as diff(x**3 + 2*x, x); never put prose or code in it. For equations, include
+the equation (for example 2*x + 5 = 15), not a guessed solution. Ask a concise
+follow-up question without a tag if essential information is missing. Use earlier
+turns to resolve follow-up references, but do not claim SymPy verified anything
+yourself."""
 
 AGENT_FUNCTION_NAMES = {
     "sqrt", "cbrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan",
@@ -402,6 +412,215 @@ def _agent_result_latex(value) -> str:
 def _agent_sympy_result(expression_text: str):
     value, operation, source = _evaluate_agent_expression(expression_text)
     return value, operation, source
+
+
+def _agent_plain_math(expression) -> str:
+    return sp.sstr(expression).replace("**", "^").replace("*", " × ")
+
+
+def _agent_substitute_text(expression, substitutions) -> str:
+    text = expression if isinstance(expression, str) else sp.sstr(expression)
+    text = re.sub(r"\s*\*\*\s*", "**", text)
+    while True:
+        simplified_text = re.sub(r"\(\(([^()]*)\)\)", r"(\1)", text)
+        if simplified_text == text:
+            break
+        text = simplified_text
+    for variable, replacement in substitutions.items():
+        replacement_text = sp.sstr(replacement)
+        if not replacement.is_Atom:
+            replacement_text = f"({replacement_text})"
+        text = re.sub(
+            rf"\b{re.escape(str(variable))}\b",
+            lambda _: replacement_text,
+            text,
+        )
+    return text.replace("**", "^").replace("*", " × ")
+
+
+def _agent_system_word_problem_steps(
+    equations, solutions, expression, expression_text, results
+):
+    variables = sorted(
+        set().union(*(equation.free_symbols for equation in equations)),
+        key=str,
+    )
+    if (
+        len(variables) != 2
+        or len(equations) != 2
+        or len(solutions) != 1
+        or not all(variable in solutions[0] for variable in variables)
+    ):
+        return None
+
+    try:
+        if any(
+            sp.Poly(equation.lhs - equation.rhs, *variables).total_degree() > 1
+            for equation in equations
+        ):
+            return None
+    except sp.PolynomialError:
+        return None
+
+    first_variable, second_variable = variables
+    isolated_values = sp.solve(equations[0], first_variable)
+    if (
+        len(isolated_values) != 1
+        or isolated_values[0].has(first_variable)
+        or isolated_values[0].free_symbols - {second_variable}
+    ):
+        return None
+
+    isolated_value = isolated_values[0]
+    first_equation = equations[0]
+    first_coefficient = sp.diff(
+        first_equation.lhs - first_equation.rhs, first_variable
+    )
+    first_remainder = sp.simplify(
+        first_equation.lhs - first_coefficient * first_variable
+    )
+    isolated_numerator = sp.simplify(first_equation.rhs - first_remainder)
+    if first_remainder:
+        isolation_step = (
+            f"Subtract {_agent_plain_math(first_remainder)} from both sides"
+        )
+    else:
+        isolation_step = "Isolate the variable"
+    if first_coefficient != 1:
+        isolation_step += (
+            f", then divide both sides by {_agent_plain_math(first_coefficient)}"
+        )
+    isolation_step += ": "
+    if first_coefficient != 1:
+        isolation_step += (
+            f"{first_variable} = "
+            f"({_agent_plain_math(isolated_numerator)}) / "
+            f"{_agent_plain_math(first_coefficient)} = "
+        )
+    else:
+        isolation_step += f"{first_variable} = "
+    isolation_step += f"{_agent_plain_math(isolated_value)}."
+    steps = [
+        "Start with the equations: "
+        + " and ".join(
+            f"{_agent_plain_math(equation.lhs)} = "
+            f"{_agent_plain_math(equation.rhs)}"
+            for equation in equations
+        )
+        + ".",
+        isolation_step,
+    ]
+
+    solution = solutions[0]
+    second_equation = equations[1]
+    substituted_left = _agent_substitute_text(
+        second_equation.lhs, {first_variable: isolated_value}
+    )
+    substituted_right = _agent_substitute_text(
+        second_equation.rhs, {first_variable: isolated_value}
+    )
+    simplified_left = sp.simplify(
+        second_equation.lhs.subs(first_variable, isolated_value)
+    )
+    simplified_right = sp.simplify(
+        second_equation.rhs.subs(first_variable, isolated_value)
+    )
+    steps.extend(
+        [
+            f"Substitute {first_variable} = {_agent_plain_math(isolated_value)} "
+            f"into the second equation: {substituted_left} = {substituted_right}.",
+            "Simplify: "
+            f"{_agent_plain_math(simplified_left)} = "
+            f"{_agent_plain_math(simplified_right)}.",
+        ]
+    )
+
+    reduced_equation = sp.expand(simplified_left - simplified_right)
+    coefficient = sp.diff(reduced_equation, second_variable)
+    constant = reduced_equation.subs(second_variable, 0)
+    if coefficient and not coefficient.free_symbols:
+        if constant:
+            left_constant = simplified_left.subs(second_variable, 0)
+            if left_constant:
+                rearrangement = (
+                    f"Subtract {_agent_plain_math(left_constant)} from both "
+                    f"sides: {_agent_plain_math(coefficient * second_variable)} "
+                    f"= {_agent_plain_math(simplified_right)} - "
+                    f"{_agent_plain_math(left_constant)} = "
+                    f"{_agent_plain_math(-constant)}."
+                )
+            else:
+                rearrangement = (
+                    "Rearrange to isolate the variable term: "
+                    f"{_agent_plain_math(coefficient * second_variable)} = "
+                    f"{_agent_plain_math(-constant)}."
+                )
+            steps.append(rearrangement)
+            quotient = sp.simplify(-constant / coefficient)
+            dividend_text = _agent_plain_math(-constant)
+            divisor_text = _agent_plain_math(coefficient)
+            if (-constant).is_negative:
+                dividend_text = f"({dividend_text})"
+            if coefficient.is_negative:
+                divisor_text = f"({divisor_text})"
+            steps.append(
+                f"Divide both sides by {_agent_plain_math(coefficient)}: "
+                f"{second_variable} = "
+                f"{dividend_text} / {divisor_text} = "
+                f"{_agent_plain_math(quotient)}."
+            )
+        else:
+            steps.append(
+                f"The second equation gives {second_variable} = "
+                f"{_agent_plain_math(solution[second_variable])}."
+            )
+    first_value = sp.simplify(isolated_value.subs(solution))
+    steps.append(
+        f"Substitute {second_variable} = "
+        f"{_agent_plain_math(solution[second_variable])} into "
+        f"{first_variable} = {_agent_plain_math(isolated_value)}: "
+        f"{first_variable} = "
+        f"{_agent_substitute_text(isolated_value, {second_variable: solution[second_variable]})}"
+        f" = {_agent_plain_math(first_value)}."
+    )
+
+    substitutions = {
+        variable: solution[variable]
+        for variable in variables
+        if variable in solutions[0]
+    }
+    substitution_text = " and ".join(
+        f"{variable} = {_agent_plain_math(value)}"
+        for variable, value in substitutions.items()
+    )
+    substituted_expression = _agent_substitute_text(
+        expression_text, substitutions
+    )
+    power_match = re.fullmatch(r"\s*\((.+)\)\s*\*\*\s*(.+)\s*", expression_text)
+    if power_match:
+        base_text, exponent_text = power_match.groups()
+        base = clean_and_parse(base_text)
+        substituted_base_text = _agent_substitute_text(
+            base_text, substitutions
+        )
+        evaluated_base = sp.simplify(base.subs(substitutions))
+        if substituted_base_text != _agent_plain_math(evaluated_base):
+            evaluated_expression = sp.simplify(expression.subs(substitutions))
+            exponent_display = _agent_plain_math(clean_and_parse(exponent_text))
+            steps.append(
+                f"Substitute {substitution_text} into "
+                f"{_agent_substitute_text(expression_text, {})}: "
+                f"{substituted_expression} = {_agent_plain_math(evaluated_base)}^"
+                f"{exponent_display} = "
+                f"{_agent_plain_math(evaluated_expression)}."
+            )
+            return steps
+    steps.append(
+        f"Substitute {substitution_text} into "
+        f"{_agent_substitute_text(expression_text, {})}: "
+        f"{substituted_expression} = {_agent_plain_math(results[0])}."
+    )
+    return steps
 
 
 def _agent_solution_steps(expression_text: str, value, operation: str, source):
@@ -797,31 +1016,47 @@ def _local_agent_response(prompt: str, conversation):
         results = [sp.simplify(expression.subs(solution)) for solution in solutions]
         if not results:
             answer_text = (
-                "SymPy found no solution for the given equations, so the requested "
+                "The equations have no solution, so the requested "
                 "expression cannot be evaluated."
             )
             result_value = None
         else:
-            rendered_results = "; ".join(
-                sp.latex(result) for result in results
+            steps = _agent_system_word_problem_steps(
+                equations, solutions, expression, result_text, results
             )
-            rendered_solutions = "; ".join(
-                ", ".join(
-                    f"{variable} = {sp.sstr(value)}"
-                    for variable, value in solution.items()
-                )
-                for solution in solutions
+            if steps is None:
+                steps = [
+                    "Start with the equations: "
+                    + " and ".join(
+                        f"{_agent_plain_math(equation.lhs)} = "
+                        f"{_agent_plain_math(equation.rhs)}"
+                        for equation in equations
+                    )
+                    + ".",
+                ]
+                for solution, result in zip(solutions, results):
+                    substitutions = {
+                        variable: solution[variable]
+                        for variable in sorted(solution, key=str)
+                    }
+                    solution_text = " and ".join(
+                        f"{variable} = {_agent_plain_math(value)}"
+                        for variable, value in substitutions.items()
+                    )
+                    steps.append(
+                        f"Solving the equations gives {solution_text}."
+                    )
+                    steps.append(
+                        f"Substitute {solution_text} into "
+                        f"{_agent_substitute_text(result_text, {})}: "
+                        f"{_agent_substitute_text(result_text, substitutions)} "
+                        f"= {_agent_plain_math(result)}."
+                    )
+            answer_text = "\n\n".join(
+                f"{index}. {step}" for index, step in enumerate(steps, 1)
             )
-            answer_text = (
-                f"1. Translate the equations: \\({sp.latex(equations[0])}\\)"
-                + "".join(
-                    f", \\({sp.latex(equation)}\\)" for equation in equations[1:]
-                )
-                + f".\n\n2. Solve the system with SymPy: "
-                f"{rendered_solutions} "
-                f"\\({_agent_result_latex(solutions)}\\).\n\n"
-                f"3. Substitute into \\({sp.latex(expression)}\\): "
-                f"$$ {rendered_results} $$"
+            answer_text += (
+                f"\n\n**Answer:** {', '.join(_agent_plain_math(result) for result in results)}"
             )
             result_value = results[0] if len(results) == 1 else None
         return (
