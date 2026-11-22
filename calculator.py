@@ -163,92 +163,297 @@ def evaluate_notebook(source: str):
     return results
 
 
+def _split_top_level_commas(text: str):
+    parts = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(text):
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _parse_calculus_call(text: str):
+    call = re.fullmatch(r"(diff|differentiate|derivative|integrate|integral|limit)\s*\((.*)\)", text, re.I)
+    if not call:
+        return None
+
+    operation = call.group(1).lower()
+    arguments = _split_top_level_commas(call.group(2))
+    if not arguments:
+        raise ValueError("A calculus operation needs an expression.")
+    source = clean_and_parse(arguments[0])
+    variable = x
+    if len(arguments) > 1 and operation != "limit":
+        variable = clean_and_parse(arguments[1])
+        if not isinstance(variable, sp.Symbol):
+            raise ValueError("The differentiation/integration variable must be a symbol.")
+
+    if operation in {"diff", "differentiate", "derivative"}:
+        return sp.diff(source, variable), "derivative", source
+    if operation in {"integrate", "integral"}:
+        return sp.integrate(source, variable), "integral", source
+    if len(arguments) != 3:
+        raise ValueError("Use limit(expression, variable, point).")
+    variable = clean_and_parse(arguments[1])
+    point = clean_and_parse(arguments[2])
+    if not isinstance(variable, sp.Symbol):
+        raise ValueError("The limit variable must be a symbol.")
+    return sp.limit(source, variable, point), "limit", source
+
+
 def parse_homework_expression(text: str):
-    """Parse an expression, equation, or supported calculus prompt."""
-    text = text.strip()
-    integration = re.match(
-        r"^(?:integrate|integral|antiderivative)(?:\s+of)?\s+(.+)$",
-        text,
+    """Return the canonical result from the same SymPy operations as the solver."""
+    text = re.sub(
+        r"^(?:what is|calculate|compute|solve|evaluate|find|simplify)\s+",
+        "",
+        text.strip().rstrip("?"),
         flags=re.IGNORECASE,
     )
-    differentiation = re.match(
-        r"^(?:differentiate|derivative)(?:\s+of)?\s+(.+)$",
+    call_result = _parse_calculus_call(text)
+    if call_result:
+        return call_result
+
+    integration = re.match(
+        r"^(?:integrate|integral|antiderivative)(?:\s+of)?\s+(.+)$",
         text,
         flags=re.IGNORECASE,
     )
     if integration:
         source = clean_and_parse(integration.group(1))
         return sp.integrate(source, x), "integral", source
+
+    differentiation = re.match(
+        r"^(?:differentiate|derivative|d/dx)(?:\s+of)?\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
     if differentiation:
         source = clean_and_parse(differentiation.group(1))
         return sp.diff(source, x), "derivative", source
-    if "=" in text:
-        lhs_text, rhs_text = text.split("=", 1)
-        return clean_and_parse(lhs_text) - clean_and_parse(rhs_text), "equation", None
-    return clean_and_parse(text), "expression", None
+
+    limit_match = re.match(
+        r"^limit\s+(.+?)\s+(?:as\s+)?([A-Za-z_]\w*)\s*(?:->|→|to)\s*(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if limit_match:
+        expression, variable_name, point_text = limit_match.groups()
+        variable = sp.Symbol(variable_name)
+        source = clean_and_parse(expression)
+        point = clean_and_parse(point_text.replace("infinity", "oo").replace("inf", "oo"))
+        return sp.limit(source, variable, point), "limit", source
+
+    system_parts = _split_top_level_commas(text)
+    if len(system_parts) > 1 and all("=" in part for part in system_parts):
+        equations = []
+        variables = set()
+        for part in system_parts:
+            lhs_text, rhs_text = part.split("=", 1)
+            equation = sp.Eq(clean_and_parse(lhs_text), clean_and_parse(rhs_text))
+            equations.append(equation)
+            variables.update(equation.free_symbols)
+        solutions = sp.solve(equations, sorted(variables, key=str), dict=True)
+        return solutions, "system", None
+
+    matrix_match = re.match(r"^(det|inv|eigen|rref)\s+(.+)$", text, re.IGNORECASE)
+    if matrix_match:
+        operation, matrix_text = matrix_match.groups()
+        matrix = sp.Matrix(ast.literal_eval(matrix_text))
+        operation = operation.lower()
+        if operation == "det":
+            result = matrix.det()
+        elif operation == "inv":
+            result = matrix.inv()
+        elif operation == "eigen":
+            result = matrix.eigenvects()
+        else:
+            result = matrix.rref()
+        return result, "matrix", None
+
+    equation_match = re.fullmatch(r"(.+?)\s*=\s*(.+)", text)
+    if equation_match:
+        lhs_text, rhs_text = equation_match.groups()
+        equation = sp.Eq(clean_and_parse(lhs_text), clean_and_parse(rhs_text))
+        variables = sorted(equation.free_symbols, key=str)
+        return sp.solve(equation, variables, dict=True), "equation", None
+
+    factor_match = re.match(r"^factor(?:\s+of)?\s+(.+)$", text, re.IGNORECASE)
+    if factor_match:
+        return sp.factor(clean_and_parse(factor_match.group(1))), "expression", None
+    expand_match = re.match(r"^expand(?:\s+of)?\s+(.+)$", text, re.IGNORECASE)
+    if expand_match:
+        return sp.expand(clean_and_parse(expand_match.group(1))), "expression", None
+    if text.startswith("[["):
+        return sp.Matrix(ast.literal_eval(text)), "matrix", None
+    return sp.simplify(clean_and_parse(text)), "expression", None
 
 
-def expressions_equivalent(first, second, *, equations=False):
-    if sp.simplify(first - second) == 0:
-        return True
-    if not equations:
-        return False
-    if sp.simplify(first + second) == 0:
-        return True
-    if second == 0:
-        return False
-    ratio = sp.simplify(first / second)
-    return not ratio.free_symbols and ratio != 0 and ratio.is_finite is True
+def _parse_homework_attempt(text: str):
+    parse_locals = {"C": sp.Symbol("C"), "Matrix": sp.Matrix}
+    parts = _split_top_level_commas(text)
+    assignments = {}
+    if parts and all(re.fullmatch(r"[A-Za-z_]\w*\s*=\s*.+", part) for part in parts):
+        for part in parts:
+            name, expression = part.split("=", 1)
+            assignments[sp.Symbol(name.strip())] = clean_and_parse(expression, parse_locals)
+        return assignments
+
+    if len(parts) == 1 and text.strip().startswith("[["):
+        return sp.Matrix(ast.literal_eval(text.strip()))
+    parsed_parts = []
+    for part in parts:
+        if "=" in part:
+            lhs_text, rhs_text = part.split("=", 1)
+            parsed_parts.append(
+                sp.Eq(
+                    clean_and_parse(lhs_text, parse_locals),
+                    clean_and_parse(rhs_text, parse_locals),
+                )
+            )
+        else:
+            parsed_parts.append(clean_and_parse(part, parse_locals))
+    if len(parsed_parts) == 1:
+        return parsed_parts[0]
+    return parsed_parts
+
+
+def _homework_value_text(value):
+    if isinstance(value, dict):
+        return ", ".join(f"{key} = {sp.sstr(result)}" for key, result in value.items())
+    if isinstance(value, (list, tuple)):
+        return "; ".join(_homework_value_text(item) for item in value)
+    return sp.sstr(value)
+
+
+def _symbolically_equal(first, second):
+    if isinstance(first, (list, tuple)) and isinstance(second, (list, tuple)):
+        return len(first) == len(second) and all(
+            _symbolically_equal(a, b) for a, b in zip(first, second)
+        )
+    if isinstance(first, sp.MatrixBase) and isinstance(second, sp.MatrixBase):
+        return first.shape == second.shape and all(
+            sp.simplify(a - b) == 0
+            for a, b in zip(first, second)
+        )
+    try:
+        return sp.simplify(first - second) == 0
+    except (TypeError, AttributeError):
+        return first == second
+
+
+def _solutions_match(expected, actual):
+    if isinstance(actual, dict):
+        if not isinstance(expected, list) or len(expected) != 1:
+            return False
+        return any(
+            set(solution) == set(actual)
+            and all(
+                variable in solution and _symbolically_equal(solution[variable], value)
+                for variable, value in actual.items()
+            )
+            for solution in expected
+        )
+    if isinstance(expected, list):
+        if expected and all(isinstance(solution, dict) and len(solution) == 1 for solution in expected):
+            values = [next(iter(solution.values())) for solution in expected]
+            actual_values = actual if isinstance(actual, list) else [actual]
+            return len(values) == len(actual_values) and all(
+                any(_symbolically_equal(candidate, answer) for answer in actual_values)
+                for candidate in values
+            )
+        if isinstance(actual, list):
+            return len(expected) == len(actual) and all(
+                any(_symbolically_equal(candidate, answer) for answer in actual)
+                for candidate in expected
+            )
+        return len(expected) == 1 and _symbolically_equal(expected[0], actual)
+    return _symbolically_equal(expected, actual)
 
 
 def check_homework(original: str, attempt: str):
-    """Compare a submitted answer and return a status with focused feedback."""
-    parse_locals = {"C": sp.Symbol("C")}
+    """Compare an attempt with the solver's canonical result and explain differences."""
     expected, operation, source = parse_homework_expression(original)
-    if "=" in attempt:
-        lhs_text, rhs_text = attempt.split("=", 1)
-        submitted = clean_and_parse(
-            lhs_text, parse_locals
-        ) - clean_and_parse(rhs_text, parse_locals)
-    else:
-        submitted = clean_and_parse(attempt, parse_locals)
-    equation = operation == "equation"
-    if operation == "integral":
-        if sp.simplify(sp.diff(submitted, x) - source) == 0:
+    submitted = _parse_homework_attempt(attempt)
+    expected_text = _homework_value_text(expected)
+    submitted_text = _homework_value_text(submitted)
+
+    if operation == "integral" and not isinstance(submitted, (dict, list)):
+        derivative = sp.diff(submitted, x)
+        if sp.simplify(derivative - source) == 0:
             if sp.Symbol("C") not in submitted.free_symbols:
-                return (
-                    "almost",
-                    "This is an antiderivative, but an indefinite integral needs "
-                    "the constant of integration: add `+ C`.",
-                )
-            return "correct", "Correct antiderivative, including the constant of integration."
-    if expressions_equivalent(expected, submitted, equations=equation):
-        return "correct", "Equivalent expressions."
+                mistake = "Missing constant of integration: add `+ C`."
+                return {
+                    "status": "almost",
+                    "expected": expected_text + " + C",
+                    "parsed_attempt": submitted_text,
+                    "mistake": mistake,
+                }
+            return {
+                "status": "correct",
+                "expected": expected_text + " + C",
+                "parsed_attempt": submitted_text,
+                "mistake": "Correct antiderivative, including the constant of integration.",
+            }
 
-    if sp.simplify(expected + submitted) == 0:
-        return "incorrect", "This is a sign error: your answer is the negative of the expected result."
+    if _solutions_match(expected, submitted):
+        return {
+            "status": "correct",
+            "expected": expected_text,
+            "parsed_attempt": submitted_text,
+            "mistake": "Equivalent to the canonical result.",
+        }
 
-    if operation in {"integral", "derivative"} and (
-        expected.has(sp.Pow) or submitted.has(sp.Pow)
-    ):
-        feedback = (
-            "Check the power rule: for x^m, differentiation gives m*x^(m-1); "
-            "integration gives x^(m+1)/(m+1) when m != -1."
-        )
-    elif any(
-        expr.has(sp.sin, sp.cos, sp.tan)
-        for expr in (expected, submitted)
-    ):
-        feedback = (
-            "Check the angle units: SymPy interprets trigonometric inputs in "
-            "radians. Convert degree values to radians before evaluating."
-        )
+    if operation in {"system", "equation"} and isinstance(submitted, dict) and expected:
+        if any(
+            (set(solution) > set(submitted) or len(expected) > 1)
+            and all(
+                variable in solution and _symbolically_equal(solution[variable], value)
+                for variable, value in submitted.items()
+            )
+            for solution in expected
+        ):
+            if operation == "system":
+                mistake = "Partial solution: include values for every variable in the system."
+            else:
+                mistake = "Partial solution: include every solution of the equation."
+        else:
+            mistake = ""
     else:
-        feedback = (
-            "The expressions are not equivalent. Recheck the algebra and each "
-            "transformation."
+        mistake = ""
+
+    if not mistake and isinstance(expected, sp.Basic) and isinstance(submitted, sp.Basic):
+        if sp.simplify(expected + submitted) == 0:
+            mistake = "Sign flip: your answer is the negative of the expected result."
+    if not mistake and any(
+        expression.has(sp.sin, sp.cos, sp.tan)
+        for expression in (expected, submitted)
+        if isinstance(expression, sp.Basic)
+    ):
+        mistake = (
+            "Possible degree/radian mismatch: SymPy uses radians for trigonometric "
+            "functions; convert degree inputs to radians."
         )
-    return "incorrect", feedback
+    if not mistake:
+        simplified_expected = sp.simplify(expected) if isinstance(expected, sp.Basic) else expected
+        simplified_submitted = sp.simplify(submitted) if isinstance(submitted, sp.Basic) else submitted
+        mistake = (
+            "The results differ after simplification. Compare the canonical form "
+            f"`{_homework_value_text(simplified_expected)}` with your form "
+            f"`{_homework_value_text(simplified_submitted)}`."
+        )
+    return {
+        "status": "incorrect",
+        "expected": expected_text,
+        "parsed_attempt": submitted_text,
+        "mistake": mistake,
+    }
 
 
 def study_sheet_markdown(reports):
@@ -1851,12 +2056,11 @@ def render_homework_checker():
             }
         else:
             try:
-                status, feedback = check_homework(original, attempt)
+                result = check_homework(original, attempt)
                 st.session_state["homework_result"] = {
                     "original": original,
                     "attempt": attempt,
-                    "status": status,
-                    "feedback": feedback,
+                    **result,
                 }
             except (
                 SyntaxError,
@@ -1879,11 +2083,18 @@ def render_homework_checker():
         if "error" in result:
             st.error(result["error"])
         elif result["status"] == "correct":
-            st.success(result["feedback"])
+            st.success(result["mistake"])
+            st.markdown(f"**Expected Result:** `{result['expected']}`")
+            st.markdown(f"**Your Parsed Answer:** `{result['parsed_attempt']}`")
         elif result["status"] == "almost":
-            st.warning(result["feedback"])
+            st.warning(result["mistake"])
+            st.markdown(f"**Expected Result:** `{result['expected']}`")
+            st.markdown(f"**Your Parsed Answer:** `{result['parsed_attempt']}`")
         else:
-            st.error(result["feedback"])
+            st.error("Your answer is not equivalent to the canonical result.")
+            st.markdown(f"**Expected Result:** `{result['expected']}`")
+            st.markdown(f"**Your Parsed Answer:** `{result['parsed_attempt']}`")
+            st.markdown(f"**Likely Mistake:** {result['mistake']}")
 
 
 def render_visual_calculus():
