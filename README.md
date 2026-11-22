@@ -11,6 +11,10 @@ An interactive, web-based algebra and graphing calculator built with **Python**,
 - **Exact & Decimal Math:** Preserves exact fractions (`1/3 + 2/5 = 11/15`) and simplified radicals (`sqrt(50) = 5*sqrt(2)`) alongside decimal approximations.
 - **Quadratic Analyzer:** Automatically calculates the discriminant, vertex coordinates, and real or complex roots—and plots the parabola.
 - **Systems of Equations Solver:** Solves two-variable linear or nonlinear systems (e.g., `2x + y = 10; x - y = 2`) and graphs their intersection point.
+- **Step-by-Step Solutions:** Explanations for equations, derivatives, integrals, arithmetic, and supported symbolic operations.
+- **Advanced Symbolic Math:** ODEs, Taylor series, summations, partial fractions, trigonometric simplification, and matrix operations.
+- **Statistics & Number Theory:** Mean, median, mode, population variance and standard deviation, prime factors, GCD, and LCM.
+- **Math Reference Guide:** Expandable sidebar categories with clickable example queries for supported topics.
 - **Interactive Function Grapher:** Plots any function $f(x)$ over a custom $x$-range with gridlines and axes.
 
 ---
@@ -47,6 +51,11 @@ python -m streamlit run calculator.py
 | **System of Equations** | `2x + y = 10; x - y = 2` |
 | **Calculus** | `derivative of x^3 + 4x` or `integral of 2x + 1` |
 | **Graphing** | `graph sin(x) from -10 to 10` |
+| **Differential Equations** | `ode y' = y` |
+| **Series & Summations** | `series sin(x)` or `sum 1/n^2 from 1 to oo` |
+| **Matrix Operations** | `det [[1,2],[3,4]]` or `rref [[1,2,3],[4,5,6]]` |
+| **Statistics** | `stats 10, 20, 30, 40` |
+| **Number Theory** | `prime factors 360`, `gcd 48, 180`, or `lcm 12, 15` |
 
 ---
 
