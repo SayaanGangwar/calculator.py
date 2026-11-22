@@ -62,6 +62,56 @@ def show_steps(title: str, steps):
             st.write(step)
 
 
+def system_substitution_steps(eqs, variables):
+    first_variable, second_variable = variables
+    isolated_values = sp.solve(eqs[0], first_variable)
+    if len(isolated_values) != 1 or isolated_values[0].has(first_variable):
+        return None
+
+    isolated_value = isolated_values[0]
+    if isolated_value.free_symbols - {second_variable}:
+        return None
+
+    def substitute_in_latex(expr, variable, replacement):
+        latex_expr = sp.latex(expr)
+        latex_variable = re.escape(sp.latex(variable))
+        pattern = rf"(?<![A-Za-z]){latex_variable}(?![A-Za-z])"
+        latex_replacement = sp.latex(replacement)
+        if not (replacement.is_Atom and replacement.is_nonnegative is True):
+            latex_replacement = rf"\left({latex_replacement}\right)"
+        return re.sub(pattern, lambda _: latex_replacement, latex_expr)
+
+    substituted_equation = " = ".join(
+        substitute_in_latex(side, first_variable, isolated_value)
+        for side in (eqs[1].lhs, eqs[1].rhs)
+    )
+    simplified_sides = tuple(
+        sp.simplify(side.subs(first_variable, isolated_value))
+        for side in (eqs[1].lhs, eqs[1].rhs)
+    )
+    steps = [
+        rf"\text{{Equation 1: }}{sp.latex(eqs[0])}",
+        rf"{sp.latex(first_variable)} = {sp.latex(isolated_value)}",
+        rf"\text{{Substitute into equation 2: }}{substituted_equation}",
+        r"\text{Simplify: }" + " = ".join(sp.latex(side) for side in simplified_sides),
+    ]
+
+    second_values = sp.solve(sp.Eq(*simplified_sides, evaluate=False), second_variable)
+    if len(second_values) == 1 and not second_values[0].has(second_variable):
+        second_value = second_values[0]
+        first_value = sp.simplify(isolated_value.subs(second_variable, second_value))
+        evaluated_isolation = substitute_in_latex(
+            isolated_value, second_variable, second_value
+        )
+        steps.extend(
+            [
+                rf"{sp.latex(second_variable)} = {sp.latex(second_value)}",
+                rf"{sp.latex(first_variable)} = {evaluated_isolation} = {sp.latex(first_value)}",
+            ]
+        )
+    return steps
+
+
 def derivative_steps(expr, derivative):
     if isinstance(expr, sp.Add):
         steps = ["Sum rule: differentiate each term, then add the results."]
@@ -242,7 +292,8 @@ def handle_universal_query(raw_query: str):
 
     # 2. System of Equations separated by ';' or ','
     if re.search(r"[;,]", q) and "=" in q:
-        parts = [p.strip() for p in re.split(r"[;,]", q) if p.strip()]
+        system_query = re.sub(r"\bgraph\b", "", q, flags=re.IGNORECASE)
+        parts = [p.strip() for p in re.split(r"[;,]", system_query) if p.strip()]
         eqs = []
         all_syms = set()
         for p in parts:
@@ -271,13 +322,21 @@ def handle_universal_query(raw_query: str):
         else:
             for idx, s in enumerate(sol, 1):
                 st.latex(f"\\text{{Solution {idx}: }} " + ",\\quad ".join(f"{k} = {sp.latex(v)}" for k, v in s.items()))
-            show_steps(
-                "Show Step-by-Step Solution",
-                [
-                    "Write each equation in the system and solve them simultaneously.",
-                    "Substitute the solution values into the original equations to verify them.",
-                ],
-            )
+            with st.expander("Show Step-by-Step Solution"):
+                variables = sorted(all_syms, key=str)
+                steps = (
+                    system_substitution_steps(eqs, variables)
+                    if len(eqs) == 2 and len(variables) == 2
+                    else None
+                )
+                if steps:
+                    for step in steps:
+                        st.latex(step)
+                else:
+                    st.write(
+                        "Substitution steps are available when equation 1 uniquely "
+                        "isolates the first variable in a two-variable system."
+                    )
             if len(eqs) == 2 and x in all_syms and y in all_syms:
                 y_exprs, labels = [], []
                 for idx, eq in enumerate(eqs, 1):
@@ -291,7 +350,15 @@ def handle_universal_query(raw_query: str):
                         px, py = float(s[x].evalf()), float(s[y].evalf())
                         pts.append((px, py, f"({px:.3g}, {py:.3g})"))
                 x_center = pts[0][0] if pts else 0.0
-                render_plot(y_exprs, labels, x_center - 10, x_center + 10, pts, "System Intersection")
+                if "graph" in q_lower:
+                    render_plot(
+                        y_exprs,
+                        labels,
+                        x_center - 10,
+                        x_center + 10,
+                        pts,
+                        "System Intersection",
+                    )
         return
 
     # 3. Strip conversational prefixes
