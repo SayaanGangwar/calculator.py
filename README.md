@@ -13,7 +13,7 @@ An interactive, web-based algebra and graphing calculator built with **Python**,
 - **Systems of Equations Solver:** Solves two-variable linear or nonlinear systems (e.g., `2x + y = 10; x - y = 2`) and graphs their intersection point.
 - **Step-by-Step Solutions:** Explanations for equations, derivatives, integrals, arithmetic, and supported symbolic operations.
 - **Notebook / Scratchpad:** Evaluate multi-line expressions and reuse variables defined earlier in the notebook.
-- **Spot the Mistake:** Check algebraic answers and get targeted hints for sign, power-rule, integration-constant, and angle-unit mistakes.
+- **Spot the Mistake:** Check algebraic answers and get a problem-specific, step-by-step walkthrough with targeted hints for sign, partial-answer, power-rule, integration-constant, and angle-unit mistakes.
 - **Visual Calculus:** Explore left, right, and midpoint Riemann sums and compare Taylor polynomials with their functions.
 - **Shareable Problem Links:** URL parameters preserve the active tab, main query, surface graph, and simulator settings.
 - **Study Sheet Export:** Select solved problems from the session history and download their steps and final answers as Markdown.

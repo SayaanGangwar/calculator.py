@@ -377,29 +377,514 @@ def _solutions_match(expected, actual):
     return _symbolically_equal(expected, actual)
 
 
+def _homework_walkthrough(original, expected, operation, source):
+    """Return display-ready steps and intermediate values useful for diagnosis."""
+    steps = []
+    checkpoints = []
+    problem = re.sub(
+        r"^(?:what is|calculate|compute|solve|evaluate|find|simplify)\s+",
+        "",
+        original.strip().rstrip("?"),
+        flags=re.IGNORECASE,
+    )
+
+    if operation == "system":
+        parts = _split_top_level_commas(problem)
+        if len(parts) == 2:
+            equations = []
+            variables = set()
+            for part in parts:
+                lhs_text, rhs_text = part.split("=", 1)
+                equation = sp.Eq(
+                    clean_and_parse(lhs_text),
+                    clean_and_parse(rhs_text),
+                    evaluate=False,
+                )
+                equations.append(equation)
+                variables.update(equation.free_symbols)
+            variables = sorted(variables, key=str)
+            if len(variables) == 2 and all(
+                sp.Poly(eq.lhs - eq.rhs, *variables).total_degree() <= 1
+                for eq in equations
+            ):
+                first, second = equations
+                coefficients = [
+                    [
+                        sp.expand(eq.lhs - eq.rhs).coeff(variable)
+                        for variable in variables
+                    ]
+                    for eq in equations
+                ]
+                eliminate_index = next(
+                    (
+                        index
+                        for index in range(2)
+                        if sp.simplify(
+                            coefficients[0][index] + coefficients[1][index]
+                        )
+                        == 0
+                    ),
+                    None,
+                )
+                operation_sign, operation_text = 1, "Add"
+                scale_first, scale_second = 1, 1
+                if eliminate_index is None:
+                    eliminate_index = next(
+                        (
+                            index
+                            for index in range(2)
+                            if sp.simplify(
+                                coefficients[0][index] - coefficients[1][index]
+                            )
+                            == 0
+                        ),
+                        None,
+                    )
+                    operation_sign, operation_text = (
+                        -1,
+                        "Subtract equation 2 from equation 1",
+                    )
+                    scale_second = -1
+                if eliminate_index is None:
+                    eliminate_index = next(
+                        (
+                            index
+                            for index in range(2)
+                            if coefficients[0][index] != 0
+                            and coefficients[1][index] != 0
+                        ),
+                        None,
+                    )
+                    if eliminate_index is not None:
+                        scale_first = coefficients[1][eliminate_index]
+                        scale_second = -coefficients[0][eliminate_index]
+                        operation_sign = 0
+                        operation_text = (
+                            f"Multiply equation 1 by `{scale_first}` and equation "
+                            f"2 by `{scale_second}`, then add"
+                        )
+                if eliminate_index is not None:
+                    remaining_variable = variables[1 - eliminate_index]
+                    eliminated_variable = variables[eliminate_index]
+                    combined_lhs = sp.simplify(
+                        scale_first * first.lhs + scale_second * second.lhs
+                    )
+                    combined_rhs = sp.simplify(
+                        scale_first * first.rhs + scale_second * second.rhs
+                    )
+                    if operation_sign:
+                        equation_combination = (
+                            rf"\left({sp.latex(first.lhs)}\right)"
+                            + (r" + " if operation_sign == 1 else r" - ")
+                            + rf"\left({sp.latex(second.lhs)}\right)"
+                            + " = "
+                            + rf"\left({sp.latex(first.rhs)}\right)"
+                            + (r" + " if operation_sign == 1 else r" - ")
+                            + rf"\left({sp.latex(second.rhs)}\right)"
+                        )
+                    else:
+                        equation_combination = (
+                            rf"{sp.latex(scale_first)}\left({sp.latex(first.lhs)}\right)"
+                            rf" + {sp.latex(scale_second)}"
+                            rf"\left({sp.latex(second.lhs)}\right)"
+                            " = "
+                            rf"{sp.latex(scale_first)}\left({sp.latex(first.rhs)}\right)"
+                            rf" + {sp.latex(scale_second)}"
+                            rf"\left({sp.latex(second.rhs)}\right)"
+                        )
+                    steps.append(
+                        (
+                            f"{operation_text} to eliminate `{eliminated_variable}`.",
+                            equation_combination
+                            + r"\quad\Longrightarrow\quad "
+                            + rf"{sp.latex(combined_lhs)} = {sp.latex(combined_rhs)}",
+                        )
+                    )
+                    values = sp.solve(
+                        sp.Eq(combined_lhs, combined_rhs), remaining_variable
+                    )
+                    if len(values) == 1:
+                        value = values[0]
+                        coefficient = sp.simplify(
+                            combined_lhs.coeff(remaining_variable)
+                        )
+                        steps.append(
+                            (
+                                f"Divide both sides by `{coefficient}` to solve "
+                                f"for `{remaining_variable}`.",
+                                rf"{sp.latex(remaining_variable)} = "
+                                rf"\frac{{{sp.latex(combined_rhs)}}}"
+                                rf"{{{sp.latex(coefficient)}}}"
+                                rf" = {sp.latex(value)}",
+                            )
+                        )
+                        checkpoints.append(
+                            {
+                                "value": combined_rhs,
+                                "equation": (
+                                    f"{sp.sstr(combined_lhs)} = "
+                                    f"{sp.sstr(combined_rhs)}"
+                                ),
+                                "step": 2,
+                            }
+                        )
+                        if operation_sign == 1:
+                            opposite_rhs_value = sp.simplify(
+                                (first.rhs - second.rhs) / coefficient
+                            )
+                            checkpoints.append(
+                                {
+                                    "value": opposite_rhs_value,
+                                    "kind": "sign",
+                                    "variable": remaining_variable,
+                                    "equation": (
+                                        f"{sp.sstr(first.rhs)} - "
+                                        f"({sp.sstr(second.rhs)})"
+                                    ),
+                                }
+                            )
+                        solution = expected[0] if expected else {}
+                        if eliminated_variable in solution:
+                            substitution_lhs = sp.simplify(
+                                first.lhs.subs(remaining_variable, value)
+                            )
+                            substitution_rhs = sp.simplify(
+                                first.rhs.subs(remaining_variable, value)
+                            )
+                            steps.append(
+                                (
+                                    f"Substitute `{remaining_variable} = {value}` "
+                                    f"into equation 1 to find `{eliminated_variable}`.",
+                                    rf"{sp.latex(first.lhs)} = {sp.latex(first.rhs)}"
+                                    rf"\quad\Longrightarrow\quad "
+                                    rf"{sp.latex(substitution_lhs)} = "
+                                    rf"{sp.latex(substitution_rhs)}"
+                                    rf"\quad\Longrightarrow\quad "
+                                    rf"{sp.latex(eliminated_variable)} = "
+                                    rf"{sp.latex(solution[eliminated_variable])}",
+                                )
+                            )
+                        return steps, checkpoints
+
+    if operation == "system":
+        parts = _split_top_level_commas(problem)
+        if len(parts) == 2:
+            equations = []
+            variables = set()
+            for part in parts:
+                lhs_text, rhs_text = part.split("=", 1)
+                equation = sp.Eq(
+                    clean_and_parse(lhs_text),
+                    clean_and_parse(rhs_text),
+                    evaluate=False,
+                )
+                equations.append(equation)
+                variables.update(equation.free_symbols)
+            variables = sorted(variables, key=str)
+            substitution_steps = (
+                system_substitution_steps(equations, variables)
+                if len(variables) == 2
+                else None
+            )
+            if substitution_steps:
+                descriptions = [
+                    "Start with the first equation.",
+                    f"Isolate `{variables[0]}`.",
+                    f"Substitute into the second equation.",
+                    "Simplify the resulting equation.",
+                    f"Solve for `{variables[1]}`.",
+                    f"Substitute back to find `{variables[0]}`.",
+                ]
+                steps = [
+                    (descriptions[index], equation)
+                    for index, equation in enumerate(substitution_steps)
+                ]
+                return steps, checkpoints
+
+    if operation == "equation":
+        match = re.fullmatch(r"(.+?)\s*=\s*(.+)", problem)
+        if match:
+            lhs, rhs = (clean_and_parse(part) for part in match.groups())
+            variables = sorted((lhs - rhs).free_symbols, key=str)
+            if len(variables) == 1:
+                variable = variables[0]
+                moved = sp.expand(lhs - rhs)
+                factored = sp.factor(moved)
+                roots = [
+                    value
+                    for solution in expected
+                    for value in solution.values()
+                ]
+                root_set = ", ".join(sp.latex(value) for value in roots)
+                polynomial = sp.Poly(moved, variable)
+                if polynomial.degree() == 1:
+                    coefficient, constant = polynomial.all_coeffs()
+                    root = sp.solve(moved, variable)[0]
+                    steps.extend(
+                        [
+                            (
+                                "Move all terms to one side and set the equation to zero.",
+                                rf"{sp.latex(lhs)} - \left({sp.latex(rhs)}\right) = 0"
+                                rf"\quad\Longrightarrow\quad {sp.latex(moved)} = 0",
+                            ),
+                            (
+                                "Move the constant term to the other side.",
+                                rf"{sp.latex(coefficient * variable)}"
+                                rf" + {sp.latex(constant)} = 0"
+                                rf"\quad\Longrightarrow\quad "
+                                rf"{sp.latex(coefficient * variable)}"
+                                rf" = {sp.latex(-constant)}",
+                            ),
+                            (
+                                f"Divide both sides by `{coefficient}`.",
+                                rf"{sp.latex(variable)} = "
+                                rf"\frac{{{sp.latex(-constant)}}}"
+                                rf"{{{sp.latex(coefficient)}}}"
+                                rf" = {sp.latex(root)}",
+                            ),
+                        ]
+                    )
+                    checkpoints.append(
+                        {
+                            "value": -constant,
+                            "equation": (
+                                f"{sp.sstr(coefficient * variable)} = "
+                                f"{sp.sstr(-constant)}"
+                            ),
+                            "step": len(steps),
+                        }
+                    )
+                    return steps, checkpoints
+                steps.extend(
+                    [
+                        (
+                            "Move all terms to one side and set the equation to zero.",
+                            rf"{sp.latex(lhs)} - \left({sp.latex(rhs)}\right) = 0"
+                            rf"\quad\Longrightarrow\quad {sp.latex(moved)} = 0",
+                        ),
+                        (
+                            "Factor and solve for the variable.",
+                            rf"{sp.latex(factored)} = 0"
+                            rf"\quad\Longrightarrow\quad "
+                            rf"{sp.latex(variable)} \in \left\{{{root_set}\right\}}",
+                        ),
+                    ]
+                )
+                return steps, checkpoints
+
+    if operation in {"derivative", "integral"} and isinstance(source, sp.Basic):
+        variable = x
+        call = re.fullmatch(
+            r"(?:diff|differentiate|derivative|integrate|integral|limit)\s*\((.*)\)",
+            problem,
+            re.IGNORECASE,
+        )
+        if call:
+            arguments = _split_top_level_commas(call.group(1))
+            if len(arguments) > 1 and operation != "limit":
+                candidate = clean_and_parse(arguments[1])
+                if isinstance(candidate, sp.Symbol):
+                    variable = candidate
+        if operation == "derivative":
+            derivative = sp.diff(source, variable)
+            terms = source.args if isinstance(source, sp.Add) else (source,)
+            for term in terms:
+                steps.append(
+                    (
+                        f"Differentiate `{sp.sstr(term)}` using its derivative rule.",
+                        rf"\frac{{d}}{{d{sp.latex(variable)}}}"
+                        rf"\left({sp.latex(term)}\right)"
+                        rf" = {sp.latex(sp.diff(term, variable))}",
+                    )
+                )
+            steps.append(
+                (
+                    "Combine the differentiated terms.",
+                    rf"\frac{{d}}{{d{sp.latex(variable)}}}"
+                    rf"\left({sp.latex(source)}\right)"
+                    rf" = {sp.latex(derivative)}",
+                )
+            )
+        else:
+            terms = source.args if isinstance(source, sp.Add) else (source,)
+            for term in terms:
+                steps.append(
+                    (
+                        f"Integrate `{sp.sstr(term)}`.",
+                        rf"\int {sp.latex(term)}\,d{sp.latex(variable)}"
+                        rf" = {sp.latex(sp.integrate(term, variable))}",
+                    )
+                )
+            steps.append(
+                (
+                    "Add the constant of integration.",
+                    rf"\int {sp.latex(source)}\,d{sp.latex(variable)}"
+                    rf" = {sp.latex(expected)} + C",
+                )
+            )
+        return steps, checkpoints
+
+    if operation == "expression":
+        command = re.match(r"^(factor|expand)\b", problem, re.IGNORECASE)
+        expression_text = (
+            re.sub(r"^(?:factor|expand)(?:\s+of)?\s*", "", problem, flags=re.IGNORECASE)
+            if command
+            else problem
+        )
+        expression_text = re.sub(
+            r"(?<![.\w^])(?<!\*\*)(\d+)\s*/\s*(\d+)(?![.\w])",
+            r"Rational(\1, \2)",
+            expression_text,
+        )
+        expression = parse_expr(
+            expression_text,
+            local_dict=LOCAL_DICT,
+            transformations=TRANSFORMATIONS,
+            evaluate=False,
+        )
+        if command and command.group(1).lower() == "factor":
+            result = sp.factor(expression)
+            description = "Factor the expression."
+            steps.append(
+                (description, rf"{sp.latex(expression)} = {sp.latex(result)}")
+            )
+        elif command and command.group(1).lower() == "expand":
+            result = sp.expand(expression)
+            steps.append(
+                ("Distribute products and combine terms.", rf"{sp.latex(expression)} = {sp.latex(result)}")
+            )
+        else:
+            expanded = sp.expand(expression)
+            if expanded != expression:
+                steps.append(
+                    (
+                        "Expand products using the distributive property.",
+                        rf"{sp.latex(expression)} = {sp.latex(expanded)}",
+                    )
+                )
+            result = sp.simplify(expanded)
+            steps.append(
+                (
+                    "Combine like terms and simplify.",
+                    rf"{sp.latex(expanded)} = {sp.latex(result)}",
+                )
+            )
+        return steps, checkpoints
+
+    steps.append(
+        (
+            "Apply the appropriate rules to the given problem and compare "
+            "the result with your answer.",
+            rf"\text{{Canonical result: }}{sp.latex(expected)}",
+        )
+    )
+    return steps, checkpoints
+
+
+def _homework_step_diagnosis(submitted, expected, operation, checkpoints):
+    if operation == "system" and isinstance(submitted, dict) and expected:
+        solution = expected[0]
+        missing = [variable for variable in solution if variable not in submitted]
+        if missing:
+            supplied = ", ".join(
+                f"{variable} = {sp.sstr(value)}"
+                for variable, value in submitted.items()
+            )
+            remaining = ", ".join(
+                f"{variable} = {sp.sstr(solution[variable])}"
+                for variable in missing
+            )
+            return (
+                f"You entered `{supplied}`, which is only part of the system "
+                f"solution. Substitute into the other equation to also find "
+                f"`{remaining}`."
+            )
+    if isinstance(submitted, sp.Basic):
+        for checkpoint in checkpoints:
+            if _symbolically_equal(submitted, checkpoint["value"]):
+                if checkpoint.get("kind") == "sign" and expected:
+                    variable = checkpoint["variable"]
+                    correct_value = expected[0][variable]
+                    return (
+                        f"You entered `{variable} = {sp.sstr(submitted)}`, which "
+                        f"matches subtracting the right-hand sides "
+                        f"`{checkpoint['equation']}`. To eliminate the variable "
+                        f"with opposite signs, add the equations; this gives "
+                        f"`{variable} = {sp.sstr(correct_value)}`."
+                    )
+                return (
+                    f"You entered `{sp.sstr(submitted)}`, which is the right-hand "
+                    f"side of `{checkpoint['equation']}`, not the solved variable. "
+                    f"Check Step {checkpoint['step']}: divide both sides by the "
+                    "variable's coefficient."
+                )
+        if isinstance(expected, sp.Basic) and sp.simplify(expected + submitted) == 0:
+            return (
+                f"You entered `{sp.sstr(submitted)}`, the sign-reversed form of "
+                f"the expected result `{sp.sstr(expected)}`."
+            )
+        if operation in {"equation", "system"} and expected:
+            solution = expected[0]
+            if len(solution) == 1:
+                variable, value = next(iter(solution.items()))
+                return (
+                    f"You entered `{sp.sstr(submitted)}`, but solving for "
+                    f"`{variable}` gives `{sp.sstr(value)}`. Check the numbered "
+                    "steps for the rearrangement and division."
+                )
+    if isinstance(submitted, dict) and expected:
+        solution = expected[0]
+        incorrect = [
+            f"{variable} = {sp.sstr(value)}"
+            for variable, value in submitted.items()
+            if variable in solution
+            and not _symbolically_equal(solution[variable], value)
+        ]
+        if incorrect:
+            return (
+                f"You entered `{', '.join(incorrect)}`; the problem gives "
+                + ", ".join(
+                    f"`{variable} = {sp.sstr(solution[variable])}`"
+                    for variable, _ in submitted.items()
+                    if variable in solution
+                )
+                + ". Check the walkthrough for the step where the values diverge."
+            )
+    return ""
+
+
 def check_homework(original: str, attempt: str):
     """Compare an attempt with the solver's canonical result and explain differences."""
     expected, operation, source = parse_homework_expression(original)
     submitted = _parse_homework_attempt(attempt)
     expected_text = _homework_value_text(expected)
     submitted_text = _homework_value_text(submitted)
+    walkthrough, checkpoints = _homework_walkthrough(
+        original, expected, operation, source
+    )
 
     if operation == "integral" and not isinstance(submitted, (dict, list)):
         derivative = sp.diff(submitted, x)
         if sp.simplify(derivative - source) == 0:
             if sp.Symbol("C") not in submitted.free_symbols:
-                mistake = "Missing constant of integration: add `+ C`."
+                mistake = (
+                    f"Your expression `{submitted_text}` differentiates to the "
+                    f"integrand, but an indefinite integral also needs the "
+                    "arbitrary constant `+ C`."
+                )
                 return {
                     "status": "almost",
                     "expected": expected_text + " + C",
                     "parsed_attempt": submitted_text,
                     "mistake": mistake,
+                    "walkthrough": walkthrough,
                 }
             return {
                 "status": "correct",
                 "expected": expected_text + " + C",
                 "parsed_attempt": submitted_text,
                 "mistake": "Correct antiderivative, including the constant of integration.",
+                "walkthrough": walkthrough,
             }
 
     if _solutions_match(expected, submitted):
@@ -408,6 +893,7 @@ def check_homework(original: str, attempt: str):
             "expected": expected_text,
             "parsed_attempt": submitted_text,
             "mistake": "Equivalent to the canonical result.",
+            "walkthrough": walkthrough,
         }
 
     if operation in {"system", "equation"} and isinstance(submitted, dict) and expected:
@@ -420,9 +906,26 @@ def check_homework(original: str, attempt: str):
             for solution in expected
         ):
             if operation == "system":
-                mistake = "Partial solution: include values for every variable in the system."
+                mistake = _homework_step_diagnosis(
+                    submitted, expected, operation, checkpoints
+                ) or "Partial solution: include values for every variable in the system."
             else:
-                mistake = "Partial solution: include every solution of the equation."
+                missing_values = [
+                    value
+                    for solution in expected
+                    for value in solution.values()
+                    if not any(
+                        _symbolically_equal(value, submitted_value)
+                        for submitted_value in submitted.values()
+                    )
+                ]
+                variable = next(iter(expected[0]))
+                mistake = (
+                    f"You entered `{_homework_value_text(submitted)}`, which is "
+                    f"one solution, but `{variable} = "
+                    f"{', '.join(sp.sstr(value) for value in missing_values)}` "
+                    "is also required."
+                )
         else:
             mistake = ""
     else:
@@ -444,15 +947,21 @@ def check_homework(original: str, attempt: str):
         simplified_expected = sp.simplify(expected) if isinstance(expected, sp.Basic) else expected
         simplified_submitted = sp.simplify(submitted) if isinstance(submitted, sp.Basic) else submitted
         mistake = (
-            "The results differ after simplification. Compare the canonical form "
-            f"`{_homework_value_text(simplified_expected)}` with your form "
-            f"`{_homework_value_text(simplified_submitted)}`."
+            f"You entered `{_homework_value_text(simplified_submitted)}`, but the "
+            f"problem's result is `{_homework_value_text(simplified_expected)}`. "
+            "Compare the numbered steps to find where your work differs."
         )
+    step_diagnosis = _homework_step_diagnosis(
+        submitted, expected, operation, checkpoints
+    )
+    if step_diagnosis:
+        mistake = step_diagnosis
     return {
         "status": "incorrect",
         "expected": expected_text,
         "parsed_attempt": submitted_text,
         "mistake": mistake,
+        "walkthrough": walkthrough,
     }
 
 
@@ -2090,11 +2599,22 @@ def render_homework_checker():
             st.warning(result["mistake"])
             st.markdown(f"**Expected Result:** `{result['expected']}`")
             st.markdown(f"**Your Parsed Answer:** `{result['parsed_attempt']}`")
+            render_homework_walkthrough(result.get("walkthrough", []))
         else:
             st.error("Your answer is not equivalent to the canonical result.")
             st.markdown(f"**Expected Result:** `{result['expected']}`")
             st.markdown(f"**Your Parsed Answer:** `{result['parsed_attempt']}`")
             st.markdown(f"**Likely Mistake:** {result['mistake']}")
+            render_homework_walkthrough(result.get("walkthrough", []))
+
+
+def render_homework_walkthrough(steps):
+    if not steps:
+        return
+    st.markdown("### Step-by-Step Walkthrough")
+    for index, (explanation, equation) in enumerate(steps, 1):
+        st.markdown(f"**Step {index}:** {explanation}")
+        st.latex(equation)
 
 
 def render_visual_calculus():
