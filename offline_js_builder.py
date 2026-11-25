@@ -4,6 +4,132 @@
 def offline_js_calculator_html() -> str:
     """Return a single-file OmniMath app with no remote assets or libraries."""
     return r"""<!doctype html>
+    function cleanMathInput(raw) {
+  let s = raw.trim();
+  s = s.replace(/^(what is|calculate|solve|simplify|evaluate|find|explain why|why is|how do you solve)\s+/i, '');
+  s = s.replace(/\?+$/g, '').trim();
+  // Convert 'x' or '×' between numbers into '*' (so 5.6 x 6.6897 multiplies instead of treating x as a variable)
+  s = s.replace(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/gi, '$1 * $2');
+  s = s.replace(/×/g, '*').replace(/÷/g, '/');
+  return s;
+}
+
+function evalSafeJS(expr) {
+  let jsExpr = expr
+    .replace(/\^/g, '**')
+    .replace(/\bsin\(/g, 'Math.sin(')
+    .replace(/\bcos\(/g, 'Math.cos(')
+    .replace(/\btan\(/g, 'Math.tan(')
+    .replace(/\bsqrt\(/g, 'Math.sqrt(')
+    .replace(/\blog\(/g, 'Math.log10(')
+    .replace(/\bln\(/g, 'Math.log(')
+    .replace(/\bpi\b/gi, 'Math.PI')
+    .replace(/\be\b/g, 'Math.E');
+  if (/[^0-9+\-*/().\sMathsincoqrtlgPIE*]/.test(jsExpr)) throw new Error("Unsupported syntax");
+  return Function('"use strict"; return (' + jsExpr + ')')();
+}
+
+function generateHumanSteps(rawInput) {
+  const cleaned = cleanMathInput(rawInput);
+
+  // 1. Two-number multiplication (with decimal place breakdown)
+  const multMatch = cleaned.match(/^(-?\d+(?:\.\d+)?)\s*\*\s*(-?\d+(?:\.\d+)?)$/);
+  if (multMatch) {
+    const aStr = multMatch[1], bStr = multMatch[2];
+    const a = parseFloat(aStr), b = parseFloat(bStr);
+    const decA = (aStr.split('.')[1] || '').length;
+    const decB = (bStr.split('.')[1] || '').length;
+    const totalDec = decA + decB;
+    const intA = Math.round(a * Math.pow(10, decA));
+    const intB = Math.round(b * Math.pow(10, decB));
+    const intProd = intA * intB;
+    const ans = Number((a * b).toPrecision(12));
+
+    if (totalDec > 0) {
+      return {
+        steps: [
+          `1. Count decimal places: ${aStr} has ${decA} decimal place(s) and ${bStr} has ${decB} decimal place(s) (${totalDec} total).`,
+          `2. Multiply without decimals: ${intA} × ${intB} = ${intProd.toLocaleString()}.`,
+          `3. Move the decimal point ${totalDec} place(s) from the right → ${ans}.`
+        ],
+        answer: ans
+      };
+    }
+    return {
+      steps: [`1. Multiply ${aStr} by ${bStr} directly to get ${ans}.`],
+      answer: ans
+    };
+  }
+
+  // 2. Linear equations: ax + b = c
+  if (cleaned.includes('=')) {
+    const parts = cleaned.split('=');
+    if (parts.length === 2 && !isNaN(parseFloat(parts[1]))) {
+      const lhs = parts[0].replace(/\s+/g, '');
+      const rhs = parseFloat(parts[1].trim());
+      const lin = lhs.match(/^([+-]?\d*\.?\d*)x([+-]\d+\.?\d*)?$/i);
+      if (lin) {
+        const a = (lin[1] === '' || lin[1] === '+') ? 1 : (lin[1] === '-' ? -1 : parseFloat(lin[1]));
+        const b = lin[2] ? parseFloat(lin[2]) : 0;
+        let steps = [];
+        let newRhs = rhs;
+        if (b !== 0) {
+          newRhs = Number((rhs - b).toPrecision(12));
+          const opText = b > 0 ? `Subtract ${b} from` : `Add ${Math.abs(b)} to`;
+          steps.push(`1. ${opText} both sides: ${a}x = ${rhs} - (${b}) = ${newRhs}.`);
+        }
+        const xVal = Number((newRhs / a).toPrecision(12));
+        steps.push(`${steps.length + 1}. Divide both sides by ${a}: x = ${newRhs} / ${a} = ${xVal}.`);
+        return { steps, answer: `x = ${xVal}` };
+      }
+    }
+  }
+
+  // 3. Multi-step PEMDAS arithmetic (Parentheses -> Exponents -> Mult/Div -> Add/Sub)
+  let steps = [];
+  let current = cleaned.replace(/\s+/g, '');
+  let stepNum = 1;
+
+  while (/\(([^()]+)\)/.test(current)) {
+    current = current.replace(/\(([^()]+)\)/, (m, inner) => {
+      const val = Number(evalSafeJS(inner).toPrecision(12));
+      steps.push(`${stepNum++}. Parentheses: (${inner}) = ${val}.`);
+      return val;
+    });
+  }
+  while (/(-?\d+(?:\.\d+)?)\^(-?\d+(?:\.\d+)?)/.test(current)) {
+    current = current.replace(/(-?\d+(?:\.\d+)?)\^(-?\d+(?:\.\d+)?)/, (m, base, exp) => {
+      const val = Number(Math.pow(parseFloat(base), parseFloat(exp)).toPrecision(12));
+      steps.push(`${stepNum++}. Exponent: ${base}^${exp} = ${val}.`);
+      return val;
+    });
+  }
+  while (/(-?\d+(?:\.\d+)?)([*/])(-?\d+(?:\.\d+)?)/.test(current)) {
+    current = current.replace(/(-?\d+(?:\.\d+)?)([*/])(-?\d+(?:\.\d+)?)/, (m, l, op, r) => {
+      const val = Number((op === '*' ? parseFloat(l) * parseFloat(r) : parseFloat(l) / parseFloat(r)).toPrecision(12));
+      steps.push(`${stepNum++}. ${op === '*' ? 'Multiply' : 'Divide'}: ${l} ${op} ${r} = ${val}.`);
+      return val;
+    });
+  }
+  while (/(-?\d+(?:\.\d+)?)([+-])(\d+(?:\.\d+)?)/.test(current)) {
+    current = current.replace(/(-?\d+(?:\.\d+)?)([+-])(\d+(?:\.\d+)?)/, (m, l, op, r) => {
+      const val = Number((op === '+' ? parseFloat(l) + parseFloat(r) : parseFloat(l) - parseFloat(r)).toPrecision(12));
+      steps.push(`${stepNum++}. ${op === '+' ? 'Add' : 'Subtract'}: ${l} ${op} ${r} = ${val}.`);
+      return val;
+    });
+  }
+
+  const finalAns = Number(evalSafeJS(cleaned).toPrecision(12));
+  if (steps.length === 0) {
+    steps.push(`1. Evaluate ${cleaned} directly = ${finalAns}.`);
+  }
+  return { steps, answer: finalAns };
+}
+
+    const explained = generateHumanSteps(userQuestion);
+const replyText = explained.steps.join('\n') + `\nAnswer: ${explained.answer}`;
+    const explained = generateHumanSteps(userQuestion);
+const replyText = explained.steps.join('\n') + `\nAnswer: ${explained.answer}`;
 <html lang="en">
 <head>
 <meta charset="utf-8">
