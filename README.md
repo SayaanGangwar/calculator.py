@@ -23,6 +23,7 @@ An interactive, web-based algebra and graphing calculator built with **Python**,
 - **Math Reference Guide:** Expandable sidebar categories with clickable example queries for supported topics.
 - **Interactive Function Grapher:** Plots any function $f(x)$ over a custom $x$-range with gridlines and axes.
 - **Full App Download:** Download `OmniMath_Full_Offline.html`, which embeds the current `calculator.py` source and runs the full Streamlit app in the browser via Stlite, without a Streamlit server. Internet access is required to load Stlite and its Python packages.
+- **Instant JavaScript Download:** Download `OmniMath_Instant_Offline.html` as one HTML/CSS/JavaScript file with no CDN or remote assets. Its local solver, grapher, calculus visualizers, notebook, answer checker, and physics simulators run offline; the optional Gemini connection requires internet access. Unlike the full Stlite download, this lightweight edition uses a smaller JavaScript math engine, and offline OCR depends on native browser support.
 
 ---
 
