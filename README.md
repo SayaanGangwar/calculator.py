@@ -22,7 +22,7 @@ An interactive, web-based algebra and graphing calculator built with **Python**,
 - **Statistics & Number Theory:** Mean, median, mode, population variance and standard deviation, prime factors, GCD, and LCM.
 - **Math Reference Guide:** Expandable sidebar categories with clickable example queries for supported topics.
 - **Interactive Function Grapher:** Plots any function $f(x)$ over a custom $x$-range with gridlines and axes.
-- **Offline Calculator Download:** Download a standalone HTML calculator with expression evaluation, linear/quadratic equation solving, a multi-line scratchpad, and an interactive 2D grapher. It runs locally in the browser without an internet connection or Streamlit server.
+- **Full App Download:** Download `OmniMath_Full_Offline.html`, which embeds the current `calculator.py` source and runs the full Streamlit app in the browser via Stlite, without a Streamlit server. Internet access is required to load Stlite and its Python packages.
 
 ---
 
