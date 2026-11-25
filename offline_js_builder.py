@@ -348,6 +348,13 @@ function offlineAgent(text) {
   s = s.replace(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/gi, '$1 * $2').replace(/×/g, '*').replace(/÷/g, '/');
 
   const safeCalc = (ex) => {
+   function offlineAgent(text) {
+  const NL = String.fromCharCode(10);
+  const p = text.trim();
+  let s = p.replace(/^(what is|calculate|solve|simplify|evaluate|find|explain why|why is|how do you solve)\s+/i, '').replace(/\?+$/g, '').trim();
+  s = s.replace(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/gi, '$1 * $2').replace(/×/g, '*').replace(/÷/g, '/');
+
+  const safeCalc = (ex) => {
     const js = ex.replace(/\^/g, '**').replace(/\bsin\(/g, 'Math.sin(').replace(/\bcos\(/g, 'Math.cos(').replace(/\btan\(/g, 'Math.tan(').replace(/\bsqrt\(/g, 'Math.sqrt(').replace(/\blog\(/g, 'Math.log10(').replace(/\bln\(/g, 'Math.log(').replace(/\bpi\b/gi, 'Math.PI').replace(/\be\b/g, 'Math.E');
     if (/[^0-9+\-*/().\sMathsincoqrtlgPIE*]/.test(js)) throw new Error("bad");
     return Function('"use strict"; return (' + js + ')')();
@@ -356,25 +363,30 @@ function offlineAgent(text) {
   // 1. Two-number multiplication (decimal breakdown)
   const mult = s.match(/^(-?\d+(?:\.\d+)?)\s*\*\s*(-?\d+(?:\.\d+)?)$/);
   if (mult) {
-    const aStr = mult[1], bStr = mult[2], a = parseFloat(aStr), b = parseFloat(bStr);
-    const decA = (aStr.split('.')[1] || '').length, decB = (bStr.split('.')[1] || '').length, tot = decA + decB;
+    const aStr = mult, bStr = mult, a = parseFloat(aStr), b = parseFloat(bStr);
+    const decA = (aStr.split('.') || '').length, decB = (bStr.split('.') || '').length, tot = decA + decB;
     const intA = Math.round(a * Math.pow(10, decA)), intB = Math.round(b * Math.pow(10, decB)), prod = intA * intB;
     const ans = Number((a * b).toPrecision(12));
     if (tot > 0) {
-      return { answer: `1. Count decimal places: ${aStr} has ${decA} and ${bStr} has ${decB} (${tot} total).\n2. Multiply without decimals: ${intA} × ${intB} = ${prod.toLocaleString()}.\n3. Move the decimal ${tot} places from the right → ${ans}.\nAnswer: ${ans}` };
+      return { answer: [
+        `1. Count decimal places: ${aStr} has ${decA} and ${bStr} has ${decB} (${tot} total).`,
+        `2. Multiply without decimals: ${intA} × ${intB} = ${prod.toLocaleString()}.`,
+        `3. Move the decimal ${tot} places from the right → ${ans}.`,
+        `Answer: ${ans}`
+      ].join(NL) };
     }
-    return { answer: `1. Multiply ${aStr} by ${bStr} directly = ${ans}.\nAnswer: ${ans}` };
+    return { answer: [`1. Multiply ${aStr} by ${bStr} directly = ${ans}.`, `Answer: ${ans}`].join(NL) };
   }
 
   // 2. Linear equations (ax + b = c)
   if (s.includes('=')) {
     const parts = s.split('=');
-    if (parts.length === 2 && !isNaN(parseFloat(parts[1]))) {
-      const lhs = parts[0].replace(/\s+/g, ''), rhs = parseFloat(parts[1].trim());
+    if (parts.length === 2 && !isNaN(parseFloat(parts))) {
+      const lhs = parts.replace(/\s+/g, ''), rhs = parseFloat(parts.trim());
       const lin = lhs.match(/^([+-]?\d*\.?\d*)x([+-]\d+\.?\d*)?$/i);
       if (lin) {
-        const a = (lin[1] === '' || lin[1] === '+') ? 1 : (lin[1] === '-' ? -1 : parseFloat(lin[1]));
-        const b = lin[2] ? parseFloat(lin[2]) : 0;
+        const a = (lin === '' || lin === '+') ? 1 : (lin === '-' ? -1 : parseFloat(lin));
+        const b = lin ? parseFloat(lin) : 0;
         let steps = [], newRhs = rhs;
         if (b !== 0) {
           newRhs = Number((rhs - b).toPrecision(12));
@@ -382,7 +394,8 @@ function offlineAgent(text) {
         }
         const xVal = Number((newRhs / a).toPrecision(12));
         steps.push(`${steps.length + 1}. Divide both sides by ${a}: x = ${newRhs} / ${a} = ${xVal}.`);
-        return { answer: steps.join('\n') + `\nAnswer: x = ${xVal}` };
+        steps.push(`Answer: x = ${xVal}`);
+        return { answer: steps.join(NL) };
       }
     }
   }
@@ -396,11 +409,34 @@ function offlineAgent(text) {
     while (/(-?\d+(?:\.\d+)?)([+-])(\d+(?:\.\d+)?)/.test(cur)) cur = cur.replace(/(-?\d+(?:\.\d+)?)([+-])(\d+(?:\.\d+)?)/, (_, l, op, r) => { const v = Number((op === '+' ? +l + +r : +l - +r).toPrecision(12)); steps.push(`${n++}. ${op === '+' ? 'Add' : 'Subtract'}: ${l} ${op} ${r} = ${v}.`); return v; });
     const ans = Number(safeCalc(s).toPrecision(12));
     if (!steps.length) steps.push(`1. Evaluate ${s} = ${ans}.`);
-    return { answer: steps.join('\n') + `\nAnswer: ${ans}` };
+    steps.push(`Answer: ${ans}`);
+    return { answer: steps.join(NL) };
   } catch (e) {
-    return { answer: `1. Could not parse "${p}". Try standard math like 5.6 x 6.6897, 3 + 4 * 2^3, or 2x + 5 = 15.` };
+    return { answer: `1. Could not parse "${p}". Try standard math like 5.6 * 0.67, 3 + 4 * 2^3, or 2x + 5 = 15.` };
   }
 }
+
+function addChat(role, text) {
+  const d = document.createElement("div");
+  d.className = "message " + role;
+  d.style.whiteSpace = "pre-wrap";
+  d.textContent = (role === "user" ? "You: " : "OmniMath: ") + text;
+  $("chatHistory").appendChild(d);
+}
+
+async function askAgent() {
+  const prompt = $("agentPrompt").value.trim();
+  if (!prompt) return;
+  $("agentPrompt").value = "";
+  addChat("user", prompt);
+  const res = offlineAgent(prompt);
+  addChat("bot", res.answer);
+}
+
+$("askAgent").onclick = askAgent;
+$("agentPrompt").addEventListener("keydown", e => { if (e.key === "Enter") askAgent(); });
+$("clearChat").onclick = () => { $("chatHistory").innerHTML = ""; };
+
 
 themeInit();presetInit();tabsInit();renderHistory();drawAll();
 </script>
