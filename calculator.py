@@ -1,4 +1,5 @@
 import ast
+import inspect
 import json
 import math
 import os
@@ -3469,6 +3470,20 @@ def sync_shareable_state():
     }
 
 
+def _tabs_with_query_params(labels, key):
+    try:
+        parameters = inspect.signature(st.tabs).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "key" in parameters and "bind" in parameters:
+        return st.tabs(labels, key=key, bind="query-params")
+    return st.tabs(labels)
+
+
+def _tab_is_open(tab):
+    return getattr(tab, "open", True)
+
+
 def render_notebook():
     st.subheader("Notebook / Scratchpad")
     source = st.text_area(
@@ -3782,7 +3797,7 @@ for category, examples in reference_categories.items():
                 args=(query,),
             )
 
-solver_tab, surface_tab, simulators_tab, ai_agent_tab = st.tabs(
+solver_tab, surface_tab, simulators_tab, ai_agent_tab = _tabs_with_query_params(
     [
         "OmniMath Solver",
         "3D Surface Grapher",
@@ -3790,10 +3805,9 @@ solver_tab, surface_tab, simulators_tab, ai_agent_tab = st.tabs(
         "AI Math Agent",
     ],
     key="active_tab",
-    bind="query-params",
 )
 
-if solver_tab.open:
+if _tab_is_open(solver_tab):
     with solver_tab:
         calculator_tab, notebook_tab, checker_tab, calculus_tab, study_tab = st.tabs(
             [
@@ -3847,11 +3861,11 @@ if solver_tab.open:
         with study_tab:
             render_study_sheet()
 
-if surface_tab.open:
+if _tab_is_open(surface_tab):
     with surface_tab:
         render_surface_grapher()
 
-if simulators_tab.open:
+if _tab_is_open(simulators_tab):
     with simulators_tab:
         selected_simulator = st.selectbox(
             "Choose a simulator",
@@ -3869,7 +3883,7 @@ if simulators_tab.open:
         else:
             render_circuit_simulator()
 
-if ai_agent_tab.open:
+if _tab_is_open(ai_agent_tab):
     with ai_agent_tab:
         render_ai_math_agent()
 
