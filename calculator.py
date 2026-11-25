@@ -707,6 +707,66 @@ def _agent_api_configuration():
         return st.session_state.get("ai_agent_provider", "gemini"), user_key
     return None, None
 
+import re
+import sympy as sp
+
+def explain_any_math_locally(raw_text: str) -> str:
+    cleaned = re.sub(r"^(what is|calculate|solve|simplify|evaluate|find|explain why|why is|how do you solve)\s+", "", raw_text.strip(), flags=re.I)
+    cleaned = cleaned.rstrip("?").strip()
+    # Convert 'x' or '×' between numbers into '*' (e.g., 5.6 x 6.6897 -> 5.6 * 6.6897)
+    cleaned = re.sub(r"(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)", r"\1 * \2", cleaned, flags=re.I)
+    cleaned = cleaned.replace("×", "*").replace("÷", "/").replace("^", "**")
+
+    # 1. Two-number multiplication with decimal breakdown
+    m = re.match(r"^(-?\d+(?:\.\d+)?)\s*\*\s*(-?\d+(?:\.\d+)?)$", cleaned)
+    if m:
+        a_str, b_str = m.group(1), m.group(2)
+        dec_a = len(a_str.split(".")[1]) if "." in a_str else 0
+        dec_b = len(b_str.split(".")[1]) if "." in b_str else 0
+        tot_dec = dec_a + dec_b
+        int_a = int(round(float(a_str) * (10 ** dec_a)))
+        int_b = int(round(float(b_str) * (10 ** dec_b)))
+        prod = int_a * int_b
+        ans = sp.Rational(a_str) * sp.Rational(b_str)
+        ans_float = float(ans)
+        ans_display = int(ans_float) if ans_float.is_integer() else round(ans_float, 12)
+        if tot_dec > 0:
+            return (
+                f"1. **Count decimal places:** `{a_str}` has **{dec_a}** decimal place(s) and `{b_str}` has **{dec_b}** decimal place(s) (**{tot_dec}** total).\n"
+                f"2. **Multiply without decimals:** `{int_a} × {int_b} = {prod:,}`.\n"
+                f"3. **Place the decimal point:** Move the decimal **{tot_dec}** place(s) from the right → **{ans_display}**.\n\n"
+                f"**Answer:** `{ans_display}`"
+            )
+        return f"1. **Multiply directly:** `{a_str} × {b_str} = {ans_display}`.\n\n**Answer:** `{ans_display}`"
+
+    # 2. Single-variable equation (e.g., 2*x + 5 = 15)
+    if "=" in cleaned and cleaned.count("=") == 1:
+        lhs_str, rhs_str = [p.strip() for p in cleaned.split("=")]
+        x = sp.Symbol("x")
+        lhs = sp.sympify(lhs_str.replace("x", "*x").replace("**x", "*x").lstrip("*"))
+        rhs = sp.sympify(rhs_str)
+        sols = sp.solve(sp.Eq(lhs, rhs), x)
+        steps = [f"1. **Start with the equation:** `{lhs_str} = {rhs_str}`."]
+        const_term = lhs.subs(x, 0)
+        if const_term != 0:
+            new_rhs = rhs - const_term
+            action = f"Subtract `{const_term}` from" if const_term > 0 else f"Add `{abs(const_term)}` to"
+            steps.append(f"2. **Isolate the variable term:** {action} both sides → `{lhs - const_term} = {new_rhs}`.")
+        steps.append(f"{len(steps)+1}. **Solve for `x`:** Divide by the coefficient of `x` → `x = {', '.join(str(s) for s in sols)}`.")
+        steps.append(f"\n**Answer:** `x = {', '.join(str(s) for s in sols)}`")
+        return "\n".join(steps)
+
+    # 3. General expression evaluation
+    expr = sp.sympify(cleaned)
+    val = sp.simplify(expr)
+    num_val = float(val) if val.is_number else val
+    if isinstance(num_val, float) and num_val.is_integer():
+        num_val = int(num_val)
+    return (
+        f"1. **Parse expression:** `{cleaned.replace('**', '^')}`.\n"
+        f"2. **Apply order of operations (PEMDAS) and simplify:** `{num_val}`.\n\n"
+        f"**Answer:** `{num_val}`"
+    )
 
 def _request_agent_completion(provider: str, api_key: str, conversation):
     if sys.platform == "emscripten":
