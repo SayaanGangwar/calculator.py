@@ -3594,6 +3594,424 @@ def render_study_sheet():
         st.caption("Choose at least one problem to enable the download.")
 
 
+def offline_calculator_html():
+    """Return a self-contained calculator page that works without a server."""
+    return r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniMath Offline Calculator</title>
+<style>
+:root{color-scheme:dark;--bg:#071a2c;--surface:#12304a;--raised:#0c2439;--fg:#d9f0ff;--muted:#91b5cc;--accent:#62c6f2;--border:#28516d;--error:#ff9eaa;--good:#9be7bf}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 20px 48px}
+h1,h2{color:var(--accent);line-height:1.2}
+h1{margin:0 0 8px;font-size:clamp(1.7rem,4vw,2.4rem)}
+h2{font-size:1.25rem;margin:0 0 14px}
+.intro{margin:0 0 22px;color:var(--muted)}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin:16px 0;box-shadow:0 8px 26px #0002}
+label{display:block;color:var(--muted);font-size:.92rem;margin:0 0 7px}
+input,textarea,button{font:inherit}
+input,textarea{width:100%;border:1px solid var(--border);border-radius:8px;background:var(--raised);color:var(--fg);padding:11px 12px;outline:none}
+input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px #62c6f233}
+textarea{resize:vertical;min-height:145px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.row{display:flex;gap:9px;align-items:end}
+.row .grow{flex:1}
+button{border:1px solid var(--accent);border-radius:8px;background:#164362;color:var(--fg);padding:9px 14px;cursor:pointer}
+button:hover{background:#205779}
+.result{min-height:26px;margin-top:12px;overflow-wrap:anywhere}
+.steps{margin:8px 0 0;padding-left:22px;color:var(--muted)}
+.error{color:var(--error)}.success{color:var(--good)}
+.scratch-results{display:grid;gap:6px;margin-top:12px}
+.scratch-line{display:flex;gap:12px;justify-content:space-between;border-bottom:1px solid var(--border);padding:5px 2px;overflow-wrap:anywhere}
+.scratch-line code{color:var(--accent);white-space:pre-wrap}
+.scratch-line .error{flex:1;text-align:right}
+.graph-controls{display:flex;gap:8px;align-items:center;margin:10px 0}
+.graph-controls input{flex:1}
+.graph-controls button{min-width:42px}
+canvas{display:block;width:100%;height:420px;border:1px solid var(--border);border-radius:9px;background:#091f32;touch-action:none}
+.hint,footer{font-size:.88rem;color:var(--muted)}
+@media(max-width:600px){main{padding:20px 12px}.panel{padding:15px}.row{align-items:stretch;flex-direction:column}canvas{height:340px}}
+</style>
+</head>
+<body>
+<main>
+<h1>OmniMath Offline Calculator</h1>
+<p class="intro">Standalone math tools. This page needs no internet connection or server.</p>
+<section class="panel" aria-labelledby="calc-title">
+<h2 id="calc-title">Expression &amp; Algebra Calculator</h2>
+<label for="expression">Enter an expression or an equation in x</label>
+<div class="row"><div class="grow"><input id="expression" value="sqrt(25) + sin(pi / 2)" autocomplete="off" spellcheck="false" placeholder="e.g. (3 + 2)^2 or x^2 - 5*x + 6 = 0"></div><button id="calculate">Calculate</button></div>
+<div id="calc-result" class="result" aria-live="polite"></div>
+</section>
+<section class="panel" aria-labelledby="scratch-title">
+<h2 id="scratch-title">Multi-Line Scratchpad</h2>
+<label for="scratch">Define variables and use them on later lines</label>
+<textarea id="scratch" spellcheck="false">x = 7
+y = 3
+(x * y)^2</textarea>
+<div id="scratch-results" class="scratch-results" aria-live="polite"></div>
+</section>
+<section class="panel" aria-labelledby="graph-title">
+<h2 id="graph-title">Interactive 2D Function Grapher</h2>
+<label for="graph-expression">Function of x</label>
+<div class="graph-controls"><input id="graph-expression" value="sin(x)" autocomplete="off" spellcheck="false" aria-label="Function to graph"><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="reset-view">Reset</button></div>
+<canvas id="graph" aria-label="Graph of the entered function"></canvas>
+<p id="graph-status" class="hint">Drag to pan. Use the mouse wheel or zoom buttons to zoom.</p>
+</section>
+<footer>OmniMath Offline · All calculations run locally in this browser.</footer>
+</main>
+<script>
+"use strict";
+(() => {
+  const functions = {
+    sqrt: Math.sqrt, sin: Math.sin, cos: Math.cos, tan: Math.tan,
+    asin: Math.asin, acos: Math.acos, atan: Math.atan,
+    sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+    log: Math.log, ln: Math.log, log10: Math.log10, exp: Math.exp,
+    abs: Math.abs, floor: Math.floor, ceil: Math.ceil, round: Math.round
+  };
+  const constants = {pi: Math.PI, e: Math.E};
+
+  function tokenize(source) {
+    const tokens = [];
+    let position = 0;
+    while (position < source.length) {
+      if (/\s/.test(source[position])) { position++; continue; }
+      const rest = source.slice(position);
+      const number = rest.match(/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/);
+      const identifier = rest.match(/^[A-Za-z_]\w*/);
+      if (number) { tokens.push({type: "number", value: Number(number[0])}); position += number[0].length; continue; }
+      if (identifier) { tokens.push({type: "name", value: identifier[0]}); position += identifier[0].length; continue; }
+      const operator = rest.match(/^\*\*|^[+\-*/^(),]/);
+      if (operator) { tokens.push({type: "operator", value: operator[0]}); position += operator[0].length; continue; }
+      throw new Error("Unexpected character: " + source[position]);
+    }
+    return tokens;
+  }
+
+  function parse(source) {
+    const tokens = tokenize(source);
+    let index = 0;
+    const peek = () => tokens[index];
+    const take = value => {
+      const token = peek();
+      if (!token || (value && token.value !== value)) throw new Error("Expected " + (value || "an expression"));
+      index++;
+      return token;
+    };
+    const startsPrimary = token => token && (token.type === "number" || token.type === "name" || token.value === "(");
+    function primary() {
+      const token = take();
+      if (token.type === "number") return {kind: "number", value: token.value};
+      if (token.type === "name") {
+        const name = token.value.toLowerCase();
+        if (peek() && peek().value === "(" && Object.hasOwn(functions, name)) {
+          take("(");
+          const argument = addition();
+          take(")");
+          return {kind: "call", name, argument};
+        }
+        return {kind: "name", name};
+      }
+      if (token.value === "(") {
+        const node = addition();
+        take(")");
+        return node;
+      }
+      throw new Error("Expected a number, variable, or parenthesized expression");
+    }
+    function power() {
+      const left = primary();
+      if (peek() && (peek().value === "^" || peek().value === "**")) {
+        take();
+        return {kind: "binary", op: "^", left, right: unary()};
+      }
+      return left;
+    }
+    function unary() {
+      if (peek() && (peek().value === "+" || peek().value === "-")) {
+        const op = take().value;
+        return {kind: "unary", op, value: unary()};
+      }
+      return power();
+    }
+    function multiplication() {
+      let node = unary();
+      while (peek()) {
+        if (peek().value === "*" || peek().value === "/") {
+          const op = take().value;
+          node = {kind: "binary", op, left: node, right: unary()};
+        } else if (startsPrimary(peek())) {
+          node = {kind: "binary", op: "*", left: node, right: unary()};
+        } else break;
+      }
+      return node;
+    }
+    function addition() {
+      let node = multiplication();
+      while (peek() && (peek().value === "+" || peek().value === "-")) {
+        const op = take().value;
+        node = {kind: "binary", op, left: node, right: multiplication()};
+      }
+      return node;
+    }
+    const tree = addition();
+    if (index !== tokens.length) throw new Error("Unexpected token: " + peek().value);
+    return tree;
+  }
+
+  function evaluate(node, variables = {}) {
+    if (node.kind === "number") return node.value;
+    if (node.kind === "name") {
+      if (Object.hasOwn(variables, node.name)) return variables[node.name];
+      if (Object.hasOwn(constants, node.name)) return constants[node.name];
+      throw new Error("Unknown variable: " + node.name);
+    }
+    if (node.kind === "call") return functions[node.name](evaluate(node.argument, variables));
+    if (node.kind === "unary") {
+      const value = evaluate(node.value, variables);
+      return node.op === "-" ? -value : value;
+    }
+    const left = evaluate(node.left, variables);
+    const right = evaluate(node.right, variables);
+    if (node.op === "+") return left + right;
+    if (node.op === "-") return left - right;
+    if (node.op === "*") return left * right;
+    if (node.op === "/") return left / right;
+    return Math.pow(left, right);
+  }
+
+  function polynomial(node, variable) {
+    const zero = [0, 0, 0];
+    const add = (a, b, sign = 1) => a.map((value, i) => value + sign * b[i]);
+    const multiply = (a, b) => {
+      const result = [0, 0, 0, 0, 0];
+      a.forEach((value, i) => b.forEach((other, j) => { result[i + j] += value * other; }));
+      if (result.slice(3).some(value => Math.abs(value) > 1e-10)) throw new Error("Only linear and quadratic equations are supported.");
+      return result.slice(0, 3);
+    };
+    if (node.kind === "number") return [node.value, 0, 0];
+    if (node.kind === "name") {
+      if (node.name === variable) return [0, 1, 0];
+      return [evaluate(node), 0, 0];
+    }
+    if (node.kind === "call") throw new Error("Equations must be polynomial in x.");
+    if (node.kind === "unary") {
+      const terms = polynomial(node.value, variable);
+      return node.op === "-" ? terms.map(value => -value) : terms;
+    }
+    const left = polynomial(node.left, variable);
+    const right = polynomial(node.right, variable);
+    if (node.op === "+") return add(left, right);
+    if (node.op === "-") return add(left, right, -1);
+    if (node.op === "*") return multiply(left, right);
+    if (node.op === "/") {
+      if (right[1] || right[2] || right[0] === 0) throw new Error("Equation denominator must be a nonzero constant.");
+      return left.map(value => value / right[0]);
+    }
+    if (right[1] || right[2] || !Number.isInteger(right[0]) || right[0] < 0 || right[0] > 2) throw new Error("Equation powers must be 0, 1, or 2.");
+    let result = [1, 0, 0];
+    for (let count = 0; count < right[0]; count++) result = multiply(result, left);
+    return result;
+  }
+
+  function format(value) {
+    if (Number.isNaN(value)) return "undefined";
+    if (!Number.isFinite(value)) return String(value);
+    if (Object.is(value, -0)) value = 0;
+    return Number(value.toPrecision(12)).toString();
+  }
+
+  function solve(source) {
+    const equals = source.indexOf("=");
+    if (equals === -1) return {answer: format(evaluate(parse(source))), steps: []};
+    if (source.indexOf("=", equals + 1) !== -1) throw new Error("Enter one equation at a time.");
+    const left = parse(source.slice(0, equals));
+    const right = parse(source.slice(equals + 1));
+    const coefficients = polynomial(left, "x").map((value, i) => value - polynomial(right, "x")[i]);
+    const [c, b, a] = coefficients;
+    const steps = ["Move all terms to one side: " + format(a) + "x² + " + format(b) + "x + " + format(c) + " = 0"];
+    if (Math.abs(a) < 1e-12 && Math.abs(b) < 1e-12) {
+      return Math.abs(c) < 1e-12
+        ? {answer: "Every real number is a solution", steps}
+        : {answer: "No solution", steps};
+    }
+    if (Math.abs(a) < 1e-12) {
+      steps.push("Isolate x: x = −c / b = " + format(-c) + " / " + format(b));
+      return {answer: "x = " + format(-c / b), steps};
+    }
+    const discriminant = b * b - 4 * a * c;
+    steps.push("Discriminant: b² − 4ac = " + format(discriminant));
+    if (discriminant >= 0) {
+      const root = Math.sqrt(discriminant);
+      const roots = [(-b + root) / (2 * a), (-b - root) / (2 * a)];
+      steps.push("Quadratic formula: x = (−b ± √(b² − 4ac)) / (2a)");
+      return {answer: "x = " + format(roots[0]) + (Math.abs(roots[0] - roots[1]) < 1e-12 ? "" : " or " + format(roots[1])), steps};
+    }
+    const real = -b / (2 * a), imaginary = Math.sqrt(-discriminant) / Math.abs(2 * a);
+    steps.push("Quadratic formula gives a complex conjugate pair.");
+    return {answer: "x = " + format(real) + " ± " + format(imaginary) + "i", steps};
+  }
+
+  const expression = document.getElementById("expression");
+  const calcResult = document.getElementById("calc-result");
+  function calculate() {
+    try {
+      const result = solve(expression.value.trim());
+      calcResult.className = "result success";
+      calcResult.replaceChildren();
+      const answer = document.createElement("strong");
+      answer.textContent = result.answer;
+      calcResult.append(answer);
+      if (result.steps.length) {
+        const list = document.createElement("ol");
+        list.className = "steps";
+        result.steps.forEach(step => { const item = document.createElement("li"); item.textContent = step; list.append(item); });
+        calcResult.append(list);
+      }
+    } catch (error) {
+      calcResult.className = "result error";
+      calcResult.textContent = error.message;
+    }
+  }
+  document.getElementById("calculate").addEventListener("click", calculate);
+  expression.addEventListener("keydown", event => { if (event.key === "Enter") calculate(); });
+  calculate();
+
+  const scratch = document.getElementById("scratch");
+  const scratchResults = document.getElementById("scratch-results");
+  function evaluateScratchpad() {
+    const variables = {};
+    scratchResults.replaceChildren();
+    scratch.value.split(/\r?\n/).forEach((raw, index) => {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) return;
+      const row = document.createElement("div");
+      row.className = "scratch-line";
+      const source = document.createElement("code");
+      source.textContent = (index + 1) + ": " + line;
+      row.append(source);
+      try {
+        const assignment = line.match(/^([A-Za-z_]\w*)\s*=\s*(.+)$/);
+        let result;
+        if (assignment) {
+          const name = assignment[1].toLowerCase();
+          if (Object.hasOwn(constants, name) || Object.hasOwn(functions, name)) throw new Error("Cannot redefine a built-in name.");
+          result = evaluate(parse(assignment[2]), variables);
+          variables[name] = result;
+          row.append(document.createTextNode("= " + name + " = " + format(result)));
+        } else {
+          result = evaluate(parse(line), variables);
+          row.append(document.createTextNode("= " + format(result)));
+        }
+      } catch (error) {
+        const message = document.createElement("span");
+        message.className = "error";
+        message.textContent = error.message;
+        row.append(message);
+      }
+      scratchResults.append(row);
+    });
+  }
+  scratch.addEventListener("input", evaluateScratchpad);
+  evaluateScratchpad();
+
+  const canvas = document.getElementById("graph");
+  const context = canvas.getContext("2d");
+  const graphInput = document.getElementById("graph-expression");
+  const graphStatus = document.getElementById("graph-status");
+  let centerX = 0, centerY = 0, scale = 55, drag = null;
+  function niceStep(raw) {
+    const power = Math.pow(10, Math.floor(Math.log10(raw)));
+    const fraction = raw / power;
+    return (fraction < 1.5 ? 1 : fraction < 3.5 ? 2 : fraction < 7.5 ? 5 : 10) * power;
+  }
+  function drawGraph() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width * dpr)), height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = rect.width, h = rect.height;
+    context.clearRect(0, 0, w, h);
+    const px = x => w / 2 + (x - centerX) * scale;
+    const py = y => h / 2 - (y - centerY) * scale;
+    context.font = "12px system-ui, sans-serif";
+    context.lineWidth = 1;
+    context.strokeStyle = "#21445b";
+    context.fillStyle = "#91b5cc";
+    const step = niceStep(65 / scale);
+    const minX = centerX - w / (2 * scale), maxX = centerX + w / (2 * scale);
+    const minY = centerY - h / (2 * scale), maxY = centerY + h / (2 * scale);
+    for (let x = Math.ceil(minX / step) * step; x <= maxX; x += step) {
+      const screenX = px(x);
+      context.beginPath(); context.moveTo(screenX, 0); context.lineTo(screenX, h); context.stroke();
+      if (Math.abs(x) > step / 100) context.fillText(format(x), screenX + 3, Math.max(13, Math.min(h - 3, py(0) + 15)));
+    }
+    for (let y = Math.ceil(minY / step) * step; y <= maxY; y += step) {
+      const screenY = py(y);
+      context.beginPath(); context.moveTo(0, screenY); context.lineTo(w, screenY); context.stroke();
+      if (Math.abs(y) > step / 100) context.fillText(format(y), Math.max(3, Math.min(w - 35, px(0) + 5)), screenY - 3);
+    }
+    context.strokeStyle = "#62c6f2";
+    context.lineWidth = 1.5;
+    if (py(0) >= 0 && py(0) <= h) { context.beginPath(); context.moveTo(0, py(0)); context.lineTo(w, py(0)); context.stroke(); }
+    if (px(0) >= 0 && px(0) <= w) { context.beginPath(); context.moveTo(px(0), 0); context.lineTo(px(0), h); context.stroke(); }
+    try {
+      const tree = parse(graphInput.value);
+      context.strokeStyle = "#65d6a6";
+      context.lineWidth = 2.2;
+      context.beginPath();
+      let drawing = false;
+      for (let screenX = 0; screenX <= w; screenX += 1.5) {
+        const value = evaluate(tree, {x: centerX + (screenX - w / 2) / scale});
+        const screenY = py(value);
+        if (!Number.isFinite(screenY) || screenY < -h * 2 || screenY > h * 3) { drawing = false; continue; }
+        if (drawing) context.lineTo(screenX, screenY); else { context.moveTo(screenX, screenY); drawing = true; }
+      }
+      context.stroke();
+      graphStatus.textContent = "y = " + graphInput.value + " · Drag to pan; use the wheel or buttons to zoom.";
+      graphStatus.className = "hint";
+    } catch (error) {
+      graphStatus.textContent = "Graph input: " + error.message;
+      graphStatus.className = "hint error";
+    }
+  }
+  function zoom(factor, anchorX, anchorY) {
+    const rect = canvas.getBoundingClientRect();
+    const beforeX = centerX + (anchorX - rect.width / 2) / scale;
+    const beforeY = centerY - (anchorY - rect.height / 2) / scale;
+    scale = Math.max(8, Math.min(500, scale * factor));
+    centerX = beforeX - (anchorX - rect.width / 2) / scale;
+    centerY = beforeY + (anchorY - rect.height / 2) / scale;
+    drawGraph();
+  }
+  graphInput.addEventListener("input", drawGraph);
+  document.getElementById("zoom-in").addEventListener("click", () => zoom(1.25, canvas.clientWidth / 2, canvas.clientHeight / 2));
+  document.getElementById("zoom-out").addEventListener("click", () => zoom(0.8, canvas.clientWidth / 2, canvas.clientHeight / 2));
+  document.getElementById("reset-view").addEventListener("click", () => { centerX = 0; centerY = 0; scale = 55; drawGraph(); });
+  canvas.addEventListener("pointerdown", event => { drag = {x: event.clientX, y: event.clientY, centerX, centerY}; canvas.setPointerCapture(event.pointerId); });
+  canvas.addEventListener("pointermove", event => {
+    if (!drag) return;
+    centerX = drag.centerX - (event.clientX - drag.x) / scale;
+    centerY = drag.centerY + (event.clientY - drag.y) / scale;
+    drawGraph();
+  });
+  canvas.addEventListener("pointerup", () => { drag = null; });
+  canvas.addEventListener("pointercancel", () => { drag = null; });
+  canvas.addEventListener("wheel", event => { event.preventDefault(); const rect = canvas.getBoundingClientRect(); zoom(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX - rect.left, event.clientY - rect.top); }, {passive: false});
+  window.addEventListener("resize", drawGraph);
+  drawGraph();
+})();
+</script>
+</body>
+</html>
+"""
+
+
 st.sidebar.title("Math Reference Guide")
 themes = {
     "Midnight Dark": {
@@ -3623,6 +4041,13 @@ themes = {
 }
 selected_theme = st.sidebar.selectbox("Color theme", list(themes))
 theme_colors = themes[selected_theme]
+st.sidebar.download_button(
+    "Download Offline Calculator (.html)",
+    data=offline_calculator_html(),
+    file_name="OmniMath_Offline.html",
+    mime="text/html",
+    key="download_offline_calculator",
+)
 configured_agent_provider, configured_agent_key = _configured_agent_api_key()
 if configured_agent_key:
     st.sidebar.caption(
