@@ -126,10 +126,7 @@ function generateHumanSteps(rawInput) {
   return { steps, answer: finalAns };
 }
 
-    const explained = generateHumanSteps(userQuestion);
-const replyText = explained.steps.join('\n') + `\nAnswer: ${explained.answer}`;
-    const explained = generateHumanSteps(userQuestion);
-const replyText = explained.steps.join('\n') + `\nAnswer: ${explained.answer}`;
+    
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -340,10 +337,71 @@ window.addEventListener("resize",()=>drawAll());
 document.querySelectorAll(".category details").forEach(()=>{});
 $("imageInput").onchange=e=>{const f=e.target.files[0];if(!f)return;const u=URL.createObjectURL(f);$("imagePreview").src=u;$("imagePreview").classList.remove("hidden");$("imageStatus").textContent="Image preview ready. Native browser OCR will be used if supported; otherwise enter the equation manually."};
 $("extractImage").onclick=async()=>{if(!("TextDetector" in window)){ $("imageStatus").textContent="This browser does not provide offline TextDetector OCR. The selected image remains available for visual reference; type the equation into the solver.";return}const image=$("imagePreview");if(!image.src){$("imageStatus").textContent="Select an image first.";return}try{const detector=new TextDetector(),blocks=await detector.detect(image),text=blocks.map(b=>b.rawValue).join(" ");if(!text)throw Error("No text was detected.");$("query").value=text;$("imageStatus").textContent="Extracted text. Review it in the solver input.";showMain("OmniMath Solver");showSolver("Calculator")}catch(e){$("imageStatus").textContent="OCR could not process this image: "+e.message}};
-function offlineAgent(text){let p=text.trim(),m;if((m=p.match(/area\s+of\s+(?:a\s+)?circle\s+(?:with\s+)?radius\s+([\d.]+)/i))){const r=+m[1],a=Math.PI*r*r;return{answer:`1. Use A = πr².\n2. Substitute r = ${r}: A = π × ${r}².\n3. Area = ${a}.`,query:`area of circle radius ${r}`}}const wordMatch=p.match(/^\s*if\s+(.+?)\s+then\s+(?:what\s+is|find|calculate|compute)\s+(.+?)[?.!]*$/i);if(wordMatch){const equationText=wordMatch[1].replace(/\bequals\b/gi,"=").replace(/\bis\b/gi,"=").replace(/\bplus\b/gi,"+").replace(/\bminus\b/gi,"-").replace(/\btimes\b/gi,"*").replace(/\bxy\b/gi,"x*y"),equations=equationText.split(/\s*,\s*|\s+\band\b\s+/i).filter(x=>x.includes("=")),solved=solveSystem(equations.join(", ")),values={};for(const [,name,value] of solved.answer.matchAll(/([A-Za-z_]\w*)\s*=\s*(-?(?:\d+(?:\.\d*)?|\.\d+))/g))values[name]=Number(value);const requested=wordMatch[2].replace(/\bxy\b/gi,"x*y").replace(/\bto the power of\b/gi,"^");const result=ev(parse(requested),values);return{answer:`1. Translate the conditions into equations: ${equations.join("; ")}.\n2. Solve the system: ${solved.answer}.\n3. Substitute into ${requested}: ${result}.\nAnswer: ${result}`,query:p}}if((m=p.match(/(?:twice|double)\s+(?:a|the|some)\s+number.*?(?:is|equals)\s+(\d+)/i))){const x=+m[1]/2;return{answer:`1. Let the unknown number be x.\n2. Twice the number means 2x = ${m[1]}.\n3. Divide by 2: x = ${x}.`,query:p}}const normalized=p.replace(/\bwhat is\b/i,"").replace(/\bplus\b/gi,"+").replace(/\bminus\b/gi,"-").replace(/\btimes\b/gi,"*").replace(/\bequals\b/gi,"=").replace(/\bsquared\b/gi,"^2");const result=solveQuery(normalized);return{answer:result.steps.map((s,i)=>`${i+1}. ${s}`).join("\n")+"\nAnswer: "+result.answer,query:p}}
-function addChat(role,text){const d=document.createElement("div");d.className="message "+role;d.textContent=(role==="user"?"You: ":"OmniMath: ")+text;$("chatHistory").append(d);$("chatHistory").scrollTop=$("chatHistory").scrollHeight}
-async function askAgent(){const prompt=$("agentPrompt").value.trim();if(!prompt)return;$("agentPrompt").value="";addChat("user",prompt);const key=$("apiKey").value.trim();try{let ans;if(key){$("agentStatus").textContent="Contacting Gemini; this sends the prompt and key to Google.";const res=await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key="+encodeURIComponent(key),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:"Solve the user's math question with numbered steps. Be concise. "+prompt}]}]})});if(!res.ok)throw Error("Gemini request failed (HTTP "+res.status+").");const data=await res.json();ans=data.candidates?.[0]?.content?.parts?.map(x=>x.text).join("")||"No response text returned.";$("agentStatus").textContent="Answered with Gemini."}else{const local=offlineAgent(prompt);ans=local.answer;$("agentStatus").textContent="Answered with the local offline solver."}addChat("assistant",ans);history.unshift({query:prompt,answer:ans,steps:[]});history=history.slice(0,80);saveHistory();renderHistory()}catch(e){$("agentStatus").textContent="Online request failed: "+e.message+" Local fallback:";try{addChat("assistant",offlineAgent(prompt).answer)}catch(localError){addChat("assistant","I couldn't solve that locally: "+localError.message)}}}
-$("askAgent").onclick=askAgent;$("agentPrompt").addEventListener("keydown",e=>{if(e.key==="Enter")askAgent()});$("clearChat").onclick=()=>{$("chatHistory").innerHTML="";$("agentStatus").textContent=""};
+function offlineAgent(text) {
+  let p = text.trim(), m;
+  if ((m = p.match(/area\s+of\s+(?:a\s+)?circle\s+(?:with\s+)?radius\s+([\d.]+)/i))) {
+    const r = +m[1], a = +(Math.PI * r * r).toPrecision(10);
+    return { answer: `1. Use the circle area formula: A = π × r².\n2. Plug in r = ${r}: A = π × ${r}² = π × ${r * r}.\n3. Multiply by π (≈ 3.14159): A ≈ ${a}.\nAnswer: ${a}` };
+  }
+
+  let s = p.replace(/^(what is|calculate|solve|simplify|evaluate|find|explain why|why is|how do you solve)\s+/i, '').replace(/\?+$/g, '').trim();
+  s = s.replace(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/gi, '$1 * $2').replace(/×/g, '*').replace(/÷/g, '/');
+
+  const safeCalc = (ex) => {
+    const js = ex.replace(/\^/g, '**').replace(/\bsin\(/g, 'Math.sin(').replace(/\bcos\(/g, 'Math.cos(').replace(/\btan\(/g, 'Math.tan(').replace(/\bsqrt\(/g, 'Math.sqrt(').replace(/\blog\(/g, 'Math.log10(').replace(/\bln\(/g, 'Math.log(').replace(/\bpi\b/gi, 'Math.PI').replace(/\be\b/g, 'Math.E');
+    if (/[^0-9+\-*/().\sMathsincoqrtlgPIE*]/.test(js)) throw new Error("bad");
+    return Function('"use strict"; return (' + js + ')')();
+  };
+
+  // 1. Two-number multiplication (decimal breakdown)
+  const mult = s.match(/^(-?\d+(?:\.\d+)?)\s*\*\s*(-?\d+(?:\.\d+)?)$/);
+  if (mult) {
+    const aStr = mult[1], bStr = mult[2], a = parseFloat(aStr), b = parseFloat(bStr);
+    const decA = (aStr.split('.')[1] || '').length, decB = (bStr.split('.')[1] || '').length, tot = decA + decB;
+    const intA = Math.round(a * Math.pow(10, decA)), intB = Math.round(b * Math.pow(10, decB)), prod = intA * intB;
+    const ans = Number((a * b).toPrecision(12));
+    if (tot > 0) {
+      return { answer: `1. Count decimal places: ${aStr} has ${decA} and ${bStr} has ${decB} (${tot} total).\n2. Multiply without decimals: ${intA} × ${intB} = ${prod.toLocaleString()}.\n3. Move the decimal ${tot} places from the right → ${ans}.\nAnswer: ${ans}` };
+    }
+    return { answer: `1. Multiply ${aStr} by ${bStr} directly = ${ans}.\nAnswer: ${ans}` };
+  }
+
+  // 2. Linear equations (ax + b = c)
+  if (s.includes('=')) {
+    const parts = s.split('=');
+    if (parts.length === 2 && !isNaN(parseFloat(parts[1]))) {
+      const lhs = parts[0].replace(/\s+/g, ''), rhs = parseFloat(parts[1].trim());
+      const lin = lhs.match(/^([+-]?\d*\.?\d*)x([+-]\d+\.?\d*)?$/i);
+      if (lin) {
+        const a = (lin[1] === '' || lin[1] === '+') ? 1 : (lin[1] === '-' ? -1 : parseFloat(lin[1]));
+        const b = lin[2] ? parseFloat(lin[2]) : 0;
+        let steps = [], newRhs = rhs;
+        if (b !== 0) {
+          newRhs = Number((rhs - b).toPrecision(12));
+          steps.push(`1. ${b > 0 ? 'Subtract ' + b + ' from' : 'Add ' + Math.abs(b) + ' to'} both sides: ${a}x = ${rhs} - (${b}) = ${newRhs}.`);
+        }
+        const xVal = Number((newRhs / a).toPrecision(12));
+        steps.push(`${steps.length + 1}. Divide both sides by ${a}: x = ${newRhs} / ${a} = ${xVal}.`);
+        return { answer: steps.join('\n') + `\nAnswer: x = ${xVal}` };
+      }
+    }
+  }
+
+  // 3. Step-by-step PEMDAS arithmetic
+  try {
+    let steps = [], cur = s.replace(/\s+/g, ''), n = 1;
+    while (/\(([^()]+)\)/.test(cur)) cur = cur.replace(/\(([^()]+)\)/, (_, inner) => { const v = Number(safeCalc(inner).toPrecision(12)); steps.push(`${n++}. Parentheses: (${inner}) = ${v}.`); return v; });
+    while (/(-?\d+(?:\.\d+)?)\^(-?\d+(?:\.\d+)?)/.test(cur)) cur = cur.replace(/(-?\d+(?:\.\d+)?)\^(-?\d+(?:\.\d+)?)/, (_, b, e) => { const v = Number(Math.pow(+b, +e).toPrecision(12)); steps.push(`${n++}. Exponent: ${b}^${e} = ${v}.`); return v; });
+    while (/(-?\d+(?:\.\d+)?)([*/])(-?\d+(?:\.\d+)?)/.test(cur)) cur = cur.replace(/(-?\d+(?:\.\d+)?)([*/])(-?\d+(?:\.\d+)?)/, (_, l, op, r) => { const v = Number((op === '*' ? +l * +r : +l / +r).toPrecision(12)); steps.push(`${n++}. ${op === '*' ? 'Multiply' : 'Divide'}: ${l} ${op} ${r} = ${v}.`); return v; });
+    while (/(-?\d+(?:\.\d+)?)([+-])(\d+(?:\.\d+)?)/.test(cur)) cur = cur.replace(/(-?\d+(?:\.\d+)?)([+-])(\d+(?:\.\d+)?)/, (_, l, op, r) => { const v = Number((op === '+' ? +l + +r : +l - +r).toPrecision(12)); steps.push(`${n++}. ${op === '+' ? 'Add' : 'Subtract'}: ${l} ${op} ${r} = ${v}.`); return v; });
+    const ans = Number(safeCalc(s).toPrecision(12));
+    if (!steps.length) steps.push(`1. Evaluate ${s} = ${ans}.`);
+    return { answer: steps.join('\n') + `\nAnswer: ${ans}` };
+  } catch (e) {
+    return { answer: `1. Could not parse "${p}". Try standard math like 5.6 x 6.6897, 3 + 4 * 2^3, or 2x + 5 = 15.` };
+  }
+}
+
 themeInit();presetInit();tabsInit();renderHistory();drawAll();
 </script>
 </body>
