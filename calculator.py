@@ -3696,13 +3696,6 @@ st.sidebar.download_button(
     mime="text/html",
     key="download_offline_calculator",
 )
-st.sidebar.download_button(
-    "Download Instant JS Calculator (.html)",
-    data=offline_js_calculator_html(),
-    file_name="OmniMath_Instant_Offline.html",
-    mime="text/html",
-    key="download_instant_js_calculator",
-)
 configured_agent_provider, configured_agent_key = _configured_agent_api_key()
 if configured_agent_key:
     st.sidebar.caption(
