@@ -3,7 +3,8 @@
 
 def offline_js_calculator_html() -> str:
     """Return a single-file OmniMath app with no remote assets or libraries."""
-    return r"""<!doctype html>
+return r"""<!DOCTYPE html>
+
     function cleanMathInput(raw) {
   let s = raw.trim();
   s = s.replace(/^(what is|calculate|solve|simplify|evaluate|find|explain why|why is|how do you solve)\s+/i, '');
