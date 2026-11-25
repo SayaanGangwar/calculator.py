@@ -26,7 +26,6 @@ from sympy.parsing.sympy_parser import (
     implicit_multiplication_application,
     convert_xor,
 )
-from offline_js_builder import offline_js_calculator_html
 
 # ==============================================================================
 # PAGE CONFIG & SYMBOLIC SETUP
